@@ -1,0 +1,2 @@
+build --action_env=VCPKG_ROOT=/workspaces/agentic-nids/.vcpkg
+build --action_env=PATH=$PATH:/workspaces/agentic-nids/.vcpkg

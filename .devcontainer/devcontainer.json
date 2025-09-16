@@ -1,0 +1,23 @@
+{
+  "name": "C++ & Python Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/cpp-python:latest",
+  "features": {
+    "ghcr.io/devcontainers/features/vcpkg:1": {
+      "vcpkgJsonPath": "/workspaces/agentic-nids/.devcontainer/vcpkg.json"
+    },
+    "ghcr.io/devcontainers/features/uv:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/bash"
+      },
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-python.python"
+      ]
+    }
+  },
+  "forwardPorts": [],
+  "postCreateCommand": "pip install -r agent/requirements.txt || true"
+}

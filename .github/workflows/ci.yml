@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-cpp:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [clang, g++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bazel
+        uses: bazelbuild/setup-bazel@v3
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.compiler }}
+      - name: Build with Bazel
+        run: bazel build //...
+      - name: Build with ${{ matrix.compiler }}
+        run: |
+          mkdir -p build
+          cd src
+          ${{ matrix.compiler }} -std=c++17 -o ../build/flow_agent flow_agent.cpp flow.cpp
+
+  build-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Build Python packages
+        run: |
+          cd agent
+          uv pip install -r requirements.txt
+          uv pip install .
