@@ -1,0 +1,35 @@
+# Makefile.build: Trigger Bazel build
+
+.PHONY: all bazel-build
+
+all: bazel-build
+
+# Makefile.build: Unified build, lint, and format
+
+.PHONY: all bazel-build lint lint-cpp lint-python format format-cpp format-python
+
+all: bazel-build lint format
+
+# Build targets
+bazel-build:
+	bazel build //...
+
+# Lint targets
+lint: lint-cpp lint-python
+
+lint-cpp:
+	clang-tidy src/*.cpp -- -Iinclude
+
+lint-python:
+	uv pip install ruff
+	ruff agent/
+
+# Format targets
+format: format-cpp format-python
+
+format-cpp:
+	clang-format -i src/*.cpp include/*.h
+
+format-python:
+	uv pip install ruff
+	ruff format agent/
