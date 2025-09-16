@@ -69,7 +69,7 @@ flowchart LR
 		PA2[Isolation Forest]
 		PA3[LLM-based Reasoning]
 		PA4[Reporting]
-		PA5[Aggregate Transformer (FlowTransformer)]
+		PA5[Aggregate Transformer]
 	end
 	subgraph LLM & XAI
 		LX1[Contextual Reasoning]
@@ -89,7 +89,7 @@ flowchart LR
 	PA4 --> Human[Human Operator]
 ```
 
-#### LLM-Powered Explanation Module (ChatIDS-inspired)
+#### LLM-Powered Explanation Module
 ```mermaid
 flowchart TD
 	A[NIDS Alert] --> B[LLM Explanation Engine]
