@@ -56,6 +56,7 @@ flowchart TD
 	F --> G[Human Operator]
 ```
 
+
 #### Architecture Overview
 ```mermaid
 flowchart LR
@@ -68,6 +69,7 @@ flowchart LR
 		PA2[Isolation Forest]
 		PA3[LLM-based Reasoning]
 		PA4[Reporting]
+		PA5[Aggregate Transformer (FlowTransformer)]
 	end
 	subgraph LLM & XAI
 		LX1[Contextual Reasoning]
@@ -80,6 +82,8 @@ flowchart LR
 	PA2 --> PA3
 	PA3 --> LX1
 	PA3 --> LX2
+	PA5 --> PA3
+	PA5 --> LX1
 	LX1 --> LX2
 	LX2 --> PA4
 	PA4 --> Human[Human Operator]
@@ -109,9 +113,11 @@ flowchart TD
 - **Automation:** Automated event correlation, response workflows, and function calling for threat mitigation.
 - **LLM-Powered Explanations:** Automated incident reports, retrieval-augmented generation (RAG), interactive Q&A, and prompt engineering for tailored explanations.
 
+
 #### ML Models
 - **XGBoost Classifier:** Supervised attack classification.
 - **Isolation Forest:** Unsupervised anomaly detection.
+- **Aggregate Transformer (FlowTransformer):** Aggregates and models network flows using transformer architectures for advanced anomaly and attack detection.
 - **LLM-based Reasoning:** For explanations and contextual analysis.
 
 #### Build System
