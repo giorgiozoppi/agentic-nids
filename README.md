@@ -6,34 +6,58 @@ Agentic Network Intrusion Detection System (NIDS)
 ## Compilation & Setup
 
 ### Prerequisites
-- Bazel (build system)
-- vcpkg (C++ dependency manager)
-- Python 3.8+
-- uv (Python package manager)
-- clang/g++ (C++ compilers)
+- **Bazel** - Build system for C++ components on Debian/Ubuntu: ```sudo apt install bazel-bootstrap```
+- **Git** - For submodule management (nDPI dependency)
+- **Python 3.8+** - For the ML/LLM agent
+- **uv** - Python package manager
+- **clang/g++** - C++ compilers
+- **vcpkg** - C++ dependency manager (optional)
 
-### Build All (C++ & Python)
+### Quick Start
 ```bash
+# Clone the repository with submodules
+git clone --recursive https://github.com/your-org/agentic-nids.git
+cd agentic-nids
+
+# Build everything (dependencies + C++ + Python)
 make -f Makefile.build
 ```
 
-### Build C++ Only (Bazel)
-```bash
-make -f Makefile.build bazel-build
-```
+### Build Commands
 
-### Lint & Format
+#### Full Build (Recommended)
 ```bash
+make -f Makefile.build
+```
+This command will:
+1. Initialize and update the nDPI submodule
+2. Build all C++ components with Bazel
+3. Run linting and formatting checks
+
+#### Individual Build Steps
+```bash
+# Initialize dependencies (nDPI submodule)
+make -f Makefile.build deps
+
+# Build C++ components only
+make -f Makefile.build bazel-build
+
+# Run linting
 make -f Makefile.build lint
+
+# Run formatting
 make -f Makefile.build format
 ```
 
-### Python Package
+#### Python Agent Setup
 ```bash
 cd agent
 uv pip install -r requirements.txt
 uv pip install .
 ```
+
+### Dependencies
+The project uses **nDPI** (Network Deep Packet Inspection) library as a git submodule for advanced protocol detection and flow analysis. The build system automatically manages this dependency.
 
 ## Design & Architecture
 
@@ -121,9 +145,10 @@ flowchart TD
 - **LLM-based Reasoning:** For explanations and contextual analysis.
 
 #### Build System
-- **Bazel:** Builds and manages C++ targets.
-- **vcpkg:** Handles C++ dependencies.
-- **uv:** Manages Python dependencies.
+- **Bazel:** Builds and manages C++ targets and nDPI integration
+- **Git Submodules:** Manages nDPI dependency automatically
+- **Make:** Orchestrates the build process with dependency management
+- **uv:** Manages Python dependencies
 
 #### Development Environment
 - **Devcontainer:** Pre-configured for C++, Python, Bazel, vcpkg, and uv.
@@ -134,10 +159,22 @@ flowchart TD
 - Integrate additional ML/LLM models for advanced detection and reasoning.
 
 ## Repository Structure
-- `src/` - C++ source files
-- `include/` - C++ headers
-- `agent/` - Python agent package
-- `.devcontainer/` - Devcontainer config and vcpkg dependencies
-- `.github/workflows/` - CI workflows
-- `Makefile.build` - Unified build, lint, and format commands
-- `WORKSPACE`, `BUILD` - Bazel build files
+```
+agentic-nids/
+├── src/              # C++ source files (flow analysis, packet processing)
+├── include/          # C++ header files
+├── agent/            # Python ML/LLM agent package
+├── nDPI/             # nDPI library (git submodule)
+├── .devcontainer/    # Development container configuration
+├── .github/          # CI/CD workflows and configurations
+├── Makefile.build    # Unified build, lint, and format commands
+├── WORKSPACE         # Bazel workspace configuration
+├── BUILD             # Main Bazel build configuration
+└── README.md         # This file
+```
+
+### Key Components
+- **C++ Core (`src/`, `include/`):** High-performance packet processing and flow analysis using nDPI
+- **Python Agent (`agent/`):** ML models, LLM integration, and explainable AI components
+- **nDPI Integration:** Advanced protocol detection and deep packet inspection capabilities
+- **Build System:** Automated dependency management and cross-language builds

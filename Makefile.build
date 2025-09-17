@@ -6,9 +6,17 @@ all: bazel-build
 
 # Makefile.build: Unified build, lint, and format
 
-.PHONY: all bazel-build lint lint-cpp lint-python format format-cpp format-python
+.PHONY: all bazel-build lint lint-cpp lint-python format format-cpp format-python deps deps-ndpi
 
-all: bazel-build lint format
+all: deps bazel-build lint format
+
+# Dependency targets
+deps: deps-ndpi
+
+deps-ndpi:
+	@echo "Initializing nDPI submodule..."
+	git submodule update --init --recursive nDPI
+	@echo "nDPI submodule ready"
 
 # Build targets
 bazel-build:

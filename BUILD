@@ -2,7 +2,6 @@
 
 cc_binary(
     name = "flow_agent",
-    srcs = ["src/flow_agent.cpp", "src/flow.cpp"],
-    hdrs = ["include/flow_agent.h"],
-    deps = [],
+    srcs = ["src/main.cpp"],
+    deps = ["//nDPI:ndpi"],
 )

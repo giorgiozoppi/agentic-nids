@@ -1,2 +1,5 @@
 build --action_env=VCPKG_ROOT=/workspaces/agentic-nids/.vcpkg
-build --action_env=PATH=$PATH:/workspaces/agentic-nids/.vcpkg
+build --action_env=PATH=/usr/bin:/bin:/usr/local/bin:/workspaces/agentic-nids/.vcpkg
+build --action_env=JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+build --action_env=CC=/usr/bin/gcc
+build --action_env=CXX=/usr/bin/g++
