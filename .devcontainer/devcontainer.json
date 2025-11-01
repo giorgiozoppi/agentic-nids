@@ -1,5 +1,5 @@
 {
-  "name": "C++ & Python Dev Container",
+  "name": "Agenntic NIDS Development Container",
   "build": {
     "dockerfile": "../Dockerfile",
     "context": ".."
