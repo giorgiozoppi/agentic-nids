@@ -1,11 +1,13 @@
 {
   "name": "C++ & Python Dev Container",
-  "image": "mcr.microsoft.com/devcontainers/cpp-python:latest",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
   "features": {
     "ghcr.io/devcontainers/features/vcpkg:1": {
       "vcpkgJsonPath": "/workspaces/agentic-nids/.devcontainer/vcpkg.json"
-    },
-    "ghcr.io/devcontainers/features/uv:1": {}
+    }
   },
   "customizations": {
     "vscode": {
@@ -19,5 +21,5 @@
     }
   },
   "forwardPorts": [],
-  "postCreateCommand": "pip install -r agent/requirements.txt || true"
+  "postCreateCommand": "cd agent && uv sync"
 }
