@@ -1,180 +1,327 @@
+# Agentic Network Intrusion Detection System (NIDS)
 
-# agentic-nids
+**AI-Powered Network Security with Explainable Machine Learning**
 
-Agentic Network Intrusion Detection System (NIDS)
+A modern, Python-based Network Intrusion Detection System using Google's Agent2Agent (A2A) Protocol, ONNX ML models, and explainable AI for real-time threat detection and analysis.
 
-## Compilation & Setup
+## 🌟 Features
 
-### Prerequisites
-- **Bazel** - Build system for C++ components on Debian/Ubuntu: ```sudo apt install bazel-bootstrap```
-- **Git** - For submodule management (nDPI dependency)
-- **Python 3.8+** - For the ML/LLM agent
-- **uv** - Python package manager
-- **clang/g++** - C++ compilers
-- **vcpkg** - C++ dependency manager (optional)
+- **🤖 Agent2Agent Protocol** - Google's A2A protocol with gRPC streaming
+- **🧠 ML-Powered Detection** - ONNX models for attack classification
+- **📊 Real-time Dashboard** - Vue.js security monitoring UI
+- **🔍 Explainable AI** - Feature importance and human-readable explanations
+- **⚙️ Configurable** - YAML-based configuration (3-minute collection intervals)
+- **☸️ Kubernetes Ready** - Production-grade Helm charts
+- **🔄 Auto-scaling** - HPA for classifier and UI components
 
-### Quick Start
-```bash
-# Clone the repository with submodules
-git clone --recursive https://github.com/your-org/agentic-nids.git
-cd agentic-nids
+## 🏗️ Architecture
 
-# Build everything (dependencies + C++ + Python)
-make -f Makefile.build
-```
-
-### Build Commands
-
-#### Full Build (Recommended)
-```bash
-make -f Makefile.build
-```
-This command will:
-1. Initialize and update the nDPI submodule
-2. Build all C++ components with Bazel
-3. Run linting and formatting checks
-
-#### Individual Build Steps
-```bash
-# Initialize dependencies (nDPI submodule)
-make -f Makefile.build deps
-
-# Build C++ components only
-make -f Makefile.build bazel-build
-
-# Run linting
-make -f Makefile.build lint
-
-# Run formatting
-make -f Makefile.build format
-```
-
-#### Python Agent Setup
-```bash
-cd agent
-uv pip install -r requirements.txt
-uv pip install .
-```
-
-### Dependencies
-The project uses **nDPI** (Network Deep Packet Inspection) library as a git submodule for advanced protocol detection and flow analysis. The build system automatically manages this dependency.
-
-## Design & Architecture
-
-### Cognitive & Explainable NIDS: Concepts & Pipeline
-This project is inspired by recent advances in Cognitive and Explainable Network Intrusion Detection Systems (NIDS), as described in:
-- [Large Language Models for Network Intrusion Detection Systems: Foundations, Implementations, and Future Directions](https://arxiv.org/html/2507.04752v1)
-- [Towards Explainable Network Intrusion Detection using Large Language Models](https://arxiv.org/html/2408.04342v1)
-- [ChatIDS: Explainable Cybersecurity Using Generative AI](https://arxiv.org/abs/2306.14504)
-
-Cognitive NIDS go beyond traditional and intelligent NIDS by integrating Large Language Models (LLMs) for contextual reasoning, explainable decision-making, and automated response. Explainable NIDS leverage LLMs and XAI techniques (e.g., SHAP, feature importance) to provide human-understandable justifications for alerts and decisions. The ChatIDS-inspired module further enhances the system by generating context-aware, human-readable incident reports and supporting interactive Q&A for security analysts.
-
-#### Key Pipeline Stages
-```mermaid
-flowchart TD
-	A[Data Collection] --> B[Data Processing]
-	B --> C[Intrusion Detection]
-	C --> D[Event Analysis]
-	D --> E[Incident Response]
-	C --> F[Explainability]
-	F --> G[Human Operator]
-```
-
-
-#### Architecture Overview
 ```mermaid
 flowchart LR
-	subgraph C++ Core
-		CC1[Flow Analysis]
-		CC2[Packet Processing]
-	end
-	subgraph Python Agent
-		PA1[XGBoost Classifier]
-		PA2[Isolation Forest]
-		PA3[LLM-based Reasoning]
-		PA4[Reporting]
-		PA5[Aggregate Transformer]
-	end
-	subgraph LLM & XAI
-		LX1[Contextual Reasoning]
-		LX2[Explainable Reports]
-		LX3[RAG/Function Calling]
-	end
-	CC1 --> PA1
-	CC2 --> PA2
-	PA1 --> PA3
-	PA2 --> PA3
-	PA3 --> LX1
-	PA3 --> LX2
-	PA5 --> PA3
-	PA5 --> LX1
-	LX1 --> LX2
-	LX2 --> PA4
-	PA4 --> Human[Human Operator]
+    subgraph Network
+        A[Traffic Capture]
+    end
+    subgraph Python Agents
+        B[nDPI Collector Agent]
+        C[Classifier Agent]
+    end
+    subgraph ML & AI
+        D[ONNX Models]
+        E[Anomaly Detection]
+        F[Risk Assessment]
+    end
+    subgraph UI
+        G[Vue.js Dashboard]
+    end
+
+    A -->|Packets| B
+    B -->|A2A Protocol/gRPC| C
+    C --> D
+    C --> E
+    C --> F
+    C -->|Results| G
 ```
 
-#### LLM-Powered Explanation Module
-```mermaid
-flowchart TD
-	A[NIDS Alert] --> B[LLM Explanation Engine]
-	B --> C[Incident Report]
-	B --> D[Interactive Q&A]
-	C --> E[Security Analyst]
-	D --> E
-	subgraph Data Sources
-		F[Threat Intelligence]
-		G[Protocol Knowledge]
-		H[Historical Alerts]
-	end
-	F --> B
-	G --> B
-	H --> B
+## 📋 Prerequisites
+
+- **Python 3.11+** - For ML/AI agents
+- **uv** - Python package manager (or pip)
+- **Docker** - For containerization (optional)
+- **Kubernetes** - For production deployment (optional)
+- **Node.js 18+** - For UI development (optional)
+
+## 🚀 Quick Start
+
+### 1. Install Dependencies
+
+```bash
+cd agent
+uv pip install -e ".[all]"
+
+# Or with pip
+pip install -e ".[all]"
 ```
 
-#### Cognitive & Explainable Features
-- **LLM Integration:** Contextual reasoning, multimodal data analysis, and natural language reporting.
-- **Explainability:** Human-readable incident reports, SHAP/XAI feature importance, and justifications for detection decisions.
-- **Automation:** Automated event correlation, response workflows, and function calling for threat mitigation.
-- **LLM-Powered Explanations:** Automated incident reports, retrieval-augmented generation (RAG), interactive Q&A, and prompt engineering for tailored explanations.
+### 2. Run Quick Test
 
+```bash
+# Test with synthetic data
+python main.py --mode test
+```
 
-#### ML Models
-- **XGBoost Classifier:** Supervised attack classification.
-- **Isolation Forest:** Unsupervised anomaly detection.
-- **Aggregate Transformer (FlowTransformer):** Aggregates and models network flows using transformer architectures for advanced anomaly and attack detection.
-- **LLM-based Reasoning:** For explanations and contextual analysis.
+### 3. Analyze PCAP File
 
-#### Build System
-- **Bazel:** Builds and manages C++ targets and nDPI integration
-- **Git Submodules:** Manages nDPI dependency automatically
-- **Make:** Orchestrates the build process with dependency management
-- **uv:** Manages Python dependencies
+```bash
+# Process a PCAP file
+python main.py --mode pcap --pcap /path/to/traffic.pcap --interval 60
+```
 
-#### Development Environment
-- **Devcontainer:** Pre-configured for C++, Python, Bazel, vcpkg, and uv.
+### 4. Live Capture
 
-#### Extensibility
-- Add new Python agents for rapid prototyping.
-- Extend C++ modules for performance-critical tasks.
-- Integrate additional ML/LLM models for advanced detection and reasoning.
+```bash
+# Capture live traffic (requires sudo)
+sudo python main.py --mode live --interface eth0 --interval 180
+```
 
-## Repository Structure
+## 📊 System Components
+
+### 1. **Classifier Agent** (A2A Server)
+
+Receives flows and performs ML-based classification:
+
+```bash
+# Run standalone classifier
+python main.py --mode classifier --port 50051
+```
+
+**Features:**
+- ONNX model inference
+- Attack type detection (DoS, DDoS, port scan, malware, etc.)
+- Anomaly detection
+- Risk scoring (0-1 scale)
+- Explainable AI with feature importance
+
+### 2. **nDPI Collector Agent** (A2A Client)
+
+Collects network flows and sends to classifier:
+
+```bash
+# Run standalone collector
+python main.py --mode collector --config config/ndpi_agent.yaml
+```
+
+**Features:**
+- Packet capture (live/PCAP)
+- Flow aggregation (configurable interval)
+- nDPI protocol detection
+- Batch processing
+- Alert management
+
+### 3. **Security Dashboard** (Vue.js UI)
+
+Real-time threat visualization:
+
+```bash
+cd agent/ui
+npm install
+npm run dev
+```
+
+**Features:**
+- Real-time threat alerts
+- Risk level visualization
+- Threat details and explanations
+- Recommended actions
+- Filter by risk level
+
+## ⚙️ Configuration
+
+### YAML Configuration
+
+Edit `agent/config/ndpi_agent.yaml`:
+
+```yaml
+# Collection interval (seconds)
+collection_interval: 180  # 3 minutes
+
+# Classifier connection
+classifier_agent_url: "grpc://localhost:50051"
+
+# Alert settings
+alert_threshold: 0.7  # Risk score 0-1
+auto_block: false     # Enable auto-blocking
+
+# Processing
+batch_size: 100
+max_concurrent_requests: 10
+```
+
+### Pre-configured Templates
+
+- **`config/ndpi_agent.yaml`** - Default configuration
+- **`config/ndpi_agent_live.yaml`** - Live capture optimized
+- **`config/ndpi_agent_pcap.yaml`** - PCAP analysis optimized
+
+## 🐳 Docker Deployment
+
+Build Docker images:
+
+```bash
+# Classifier
+docker build -t jozoppi/classifier:1.0 -f docker/Dockerfile.classifier .
+
+# Collector
+docker build -t jozoppi/ndpi-collector:1.0 -f docker/Dockerfile.collector .
+
+# UI
+docker build -t jozoppi/nids-ui:1.0 -f docker/Dockerfile.ui ./agent/ui
+```
+
+## ☸️ Kubernetes Deployment
+
+Deploy to Kubernetes cluster:
+
+```bash
+cd infra/helm
+
+# Install Helm chart
+helm install agentic-nids ./agentic-nids \
+  --namespace nids \
+  --create-namespace
+
+# Access UI
+kubectl get svc agentic-nids-ui -n nids
+```
+
+**Services Exposed:**
+- **UI**: LoadBalancer on port 80 (accessible externally)
+- **Classifier**: ClusterIP on port 50051 (internal gRPC)
+- **Collector**: ClusterIP on port 8000 (internal)
+
+See [infra/README.md](infra/README.md) for detailed deployment guide.
+
+## 📖 Documentation
+
+- **[Agent README](agent/README.md)** - Classifier agent details
+- **[nDPI Integration](agent/NDPI_INTEGRATION.md)** - Collector agent guide
+- **[Kubernetes Deployment](infra/README.md)** - Infrastructure guide
+
+## 🧪 Testing
+
+### Test Modes
+
+```bash
+# Quick synthetic test
+python main.py --mode test
+
+# PCAP analysis
+python main.py --mode pcap --pcap data/sample.pcap
+
+# Live capture
+sudo python main.py --mode live --interface eth0
+```
+
+## 🎯 Use Cases
+
+1. **Network Monitoring** - Real-time threat detection
+2. **PCAP Analysis** - Offline traffic analysis
+3. **Security Research** - ML model evaluation
+4. **Incident Response** - Threat investigation
+5. **Compliance** - Security audit trails
+
+## 📊 Attack Types Detected
+
+- **DoS/DDoS** - Denial of Service attacks
+- **Port Scan** - Network reconnaissance
+- **Brute Force** - Authentication attacks
+- **Malware** - C&C communication
+- **Botnet** - Coordinated attacks
+- **SQL Injection** - Database attacks
+- **XSS** - Cross-site scripting
+- **Probe** - Network mapping
+
+## 🔬 ML Models
+
+The system uses ONNX format for ML models:
+
+- **Primary Model**: Flow classifier (XGBoost/Random Forest)
+- **Anomaly Detection**: Isolation Forest
+- **Risk Assessment**: Ensemble scoring
+
+### Training Custom Models
+
+See `agent/README.md` for model training guide.
+
+## 🔧 Development
+
+### Project Structure
+
 ```
 agentic-nids/
-├── src/              # C++ source files (flow analysis, packet processing)
-├── include/          # C++ header files
-├── agent/            # Python ML/LLM agent package
-├── nDPI/             # nDPI library (git submodule)
-├── .devcontainer/    # Development container configuration
-├── .github/          # CI/CD workflows and configurations
-├── Makefile.build    # Unified build, lint, and format commands
-├── WORKSPACE         # Bazel workspace configuration
-├── BUILD             # Main Bazel build configuration
-└── README.md         # This file
+├── agent/                      # Python agents
+│   ├── classifier_agent_a2a.py # Classifier (A2A server)
+│   ├── ndpi_collector_agent.py # Collector (A2A client)
+│   ├── main.py                 # Main entry point
+│   ├── config/                 # YAML configurations
+│   ├── ui/                     # Vue.js dashboard
+│   └── pyproject.toml          # Python dependencies
+├── infra/                      # Kubernetes infrastructure
+│   └── helm/                   # Helm charts
+│       └── agentic-nids/
+├── nDPI/                       # nDPI library (submodule)
+└── README.md                   # This file
 ```
 
-### Key Components
-- **C++ Core (`src/`, `include/`):** High-performance packet processing and flow analysis using nDPI
-- **Python Agent (`agent/`):** ML models, LLM integration, and explainable AI components
-- **nDPI Integration:** Advanced protocol detection and deep packet inspection capabilities
-- **Build System:** Automated dependency management and cross-language builds
+### Contributing
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open Pull Request
+
+## 🔐 Security
+
+- Network policies enabled by default
+- Pod security contexts
+- Read-only root filesystem
+- Non-root user execution
+- TLS/HTTPS support
+
+## 📚 References
+
+**Research Papers:**
+- [Large Language Models for Network Intrusion Detection](https://arxiv.org/html/2507.04752v1)
+- [Explainable Network Intrusion Detection using LLMs](https://arxiv.org/html/2408.04342v1)
+- [ChatIDS: Explainable Cybersecurity](https://arxiv.org/abs/2306.14504)
+
+**Technologies:**
+- [Google A2A Protocol](https://a2a-protocol.org/)
+- [ONNX Runtime](https://onnxruntime.ai/)
+- [nDPI - Deep Packet Inspection](https://www.ntop.org/products/deep-packet-inspection/ndpi/)
+- [Vue.js](https://vuejs.org/)
+
+## 📝 License
+
+MIT License - See [LICENSE](LICENSE) file for details
+
+## 👥 Authors
+
+**Agentic NIDS Team**
+
+## 🙏 Acknowledgments
+
+- nDPI team for deep packet inspection library
+- Google for A2A Protocol
+- ONNX Runtime team
+- Open source ML/security community
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/your-org/agentic-nids/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-org/agentic-nids/discussions)
+- **Documentation**: [Full Docs](https://docs.example.com/agentic-nids)
+
+---
+
+**Built with ❤️ for Network Security**

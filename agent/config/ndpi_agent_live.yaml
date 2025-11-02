@@ -1,0 +1,36 @@
+# nDPI Agent Configuration - Live Capture Mode
+# This configuration captures live network traffic from an interface
+
+collection_interval: 180  # Collect and classify every 3 minutes
+flow_idle_timeout: 300
+flow_active_timeout: 1800
+max_flows: 100000
+
+# Classifier settings
+classifier_agent_url: "grpc://localhost:50051"
+classifier_timeout: 30
+batch_size: 100
+
+# Live capture from network interface
+capture_interface: "eth0"  # Change to your interface (eth0, wlan0, etc.)
+pcap_file: null
+bpf_filter: "tcp or udp"  # Capture TCP and UDP traffic only
+
+# Processing
+enable_async_classification: true
+max_concurrent_requests: 20  # Higher for live capture
+retry_attempts: 3
+retry_delay: 5
+
+# Actions
+alert_threshold: 0.7
+auto_block: false  # Set to true for automatic blocking
+alert_webhook: null  # "https://your-webhook-url.com/alerts"
+
+# Output
+log_file: "logs/ndpi_agent_live.log"
+results_file: "results/live_capture_results.json"
+save_malicious_flows: true
+
+# Stats
+stats_interval: 60

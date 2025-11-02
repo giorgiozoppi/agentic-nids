@@ -1,0 +1,198 @@
+syntax = "proto3";
+
+package agent2agent;
+
+// Agent2Agent Protocol for streaming network flow classification
+// This protocol enables bidirectional streaming communication between agents
+
+service Agent2AgentService {
+  // Bidirectional streaming for flow classification
+  rpc StreamFlowClassification(stream FlowMessage) returns (stream ClassificationResult);
+
+  // Server streaming for flow analysis
+  rpc AnalyzeFlows(FlowBatch) returns (stream ClassificationResult);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Get agent capabilities
+  rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+}
+
+// Flow message for streaming
+message FlowMessage {
+  string flow_id = 1;
+  int64 timestamp = 2;
+  FlowFeatures features = 3;
+  FlowMetadata metadata = 4;
+}
+
+// Flow features for classification
+message FlowFeatures {
+  // 5-tuple
+  string src_ip = 1;
+  string dst_ip = 2;
+  uint32 src_port = 3;
+  uint32 dst_port = 4;
+  uint32 protocol = 5;
+
+  // Packet statistics
+  uint64 packets_forward = 6;
+  uint64 packets_reverse = 7;
+  uint64 bytes_forward = 8;
+  uint64 bytes_reverse = 9;
+
+  // Timing features
+  double duration = 10;
+  double iat_mean = 11;
+  double iat_std = 12;
+  double iat_min = 13;
+  double iat_max = 14;
+
+  // Protocol features
+  string detected_protocol = 15;
+  uint32 tcp_flags_forward = 16;
+  uint32 tcp_flags_reverse = 17;
+  uint32 tos = 18;
+  uint32 ttl_min = 19;
+  uint32 ttl_max = 20;
+
+  // Advanced features
+  double packets_per_second = 21;
+  double bytes_per_second = 22;
+  double packet_size_mean = 23;
+  double packet_size_std = 24;
+
+  // nDPI-specific features
+  uint32 ndpi_protocol_id = 25;
+  uint64 ndpi_risk_flags = 26;
+  uint32 risk_score = 27;
+}
+
+// Flow metadata
+message FlowMetadata {
+  string host_server_name = 1;
+  string http_user_agent = 2;
+  string http_url = 3;
+  string dns_query = 4;
+  string ja3_client = 5;
+  string ja3_server = 6;
+  string ja4_client = 7;
+
+  // Additional context
+  map<string, string> custom_fields = 10;
+}
+
+// Batch of flows for analysis
+message FlowBatch {
+  repeated FlowMessage flows = 1;
+  string batch_id = 2;
+  int64 timestamp = 3;
+}
+
+// Classification result
+message ClassificationResult {
+  string flow_id = 1;
+  int64 timestamp = 2;
+
+  // Classification
+  string attack_type = 3;
+  float confidence = 4;
+  bool is_malicious = 5;
+
+  // Model outputs
+  repeated ModelPrediction predictions = 6;
+
+  // Anomaly detection
+  AnomalyScore anomaly = 7;
+
+  // Explanation
+  Explanation explanation = 8;
+
+  // Risk assessment
+  RiskAssessment risk = 9;
+}
+
+// Individual model prediction
+message ModelPrediction {
+  string model_name = 1;
+  string prediction_class = 2;
+  float confidence = 3;
+  map<string, float> class_probabilities = 4;
+}
+
+// Anomaly score
+message AnomalyScore {
+  float score = 1;
+  bool is_anomaly = 2;
+  string anomaly_type = 3;
+  float threshold = 4;
+}
+
+// Explanation for classification
+message Explanation {
+  // Feature importance
+  map<string, float> feature_importance = 1;
+
+  // Human-readable explanation
+  string text_explanation = 2;
+
+  // LLM-generated explanation
+  string llm_explanation = 3;
+
+  // Contributing factors
+  repeated string contributing_factors = 4;
+
+  // SHAP values
+  map<string, float> shap_values = 5;
+}
+
+// Risk assessment
+message RiskAssessment {
+  float overall_risk_score = 1;
+  string risk_level = 2;  // low, medium, high, critical
+  repeated string risk_factors = 3;
+  repeated string recommended_actions = 4;
+
+  // Threat intelligence
+  ThreatIntelligence threat_intel = 5;
+}
+
+// Threat intelligence information
+message ThreatIntelligence {
+  bool is_known_threat = 1;
+  string threat_category = 2;
+  repeated string threat_indicators = 3;
+  string threat_description = 4;
+  float threat_score = 5;
+}
+
+// Health check
+message HealthCheckRequest {
+  string service = 1;
+}
+
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+  map<string, string> metrics = 3;
+}
+
+// Capabilities
+message CapabilitiesRequest {
+}
+
+message CapabilitiesResponse {
+  repeated string supported_models = 1;
+  repeated string supported_attack_types = 2;
+  repeated string features_required = 3;
+  map<string, string> model_versions = 4;
+  bool supports_llm_explanation = 5;
+  bool supports_anomaly_detection = 6;
+}

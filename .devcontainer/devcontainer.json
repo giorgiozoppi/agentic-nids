@@ -4,11 +4,6 @@
     "dockerfile": "../Dockerfile",
     "context": ".."
   },
-  "features": {
-    "ghcr.io/devcontainers/features/vcpkg:1": {
-      "vcpkgJsonPath": "/workspaces/agentic-nids/.devcontainer/vcpkg.json"
-    }
-  },
   "customizations": {
     "vscode": {
       "settings": {

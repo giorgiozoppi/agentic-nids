@@ -1,0 +1,36 @@
+# nDPI Agent Configuration - PCAP Analysis Mode
+# This configuration processes PCAP files for offline analysis
+
+collection_interval: 60  # Faster collection for PCAP analysis (1 minute)
+flow_idle_timeout: 300
+flow_active_timeout: 1800
+max_flows: 500000  # Higher for PCAP analysis
+
+# Classifier settings
+classifier_agent_url: "grpc://localhost:50051"
+classifier_timeout: 30
+batch_size: 200  # Larger batches for PCAP
+
+# PCAP file processing
+capture_interface: null
+pcap_file: "data/traffic_capture.pcap"  # Path to your PCAP file
+bpf_filter: null  # No filter for PCAP analysis
+
+# Processing
+enable_async_classification: true
+max_concurrent_requests: 50  # High concurrency for batch processing
+retry_attempts: 3
+retry_delay: 2  # Shorter delay for PCAP
+
+# Actions
+alert_threshold: 0.6  # Lower threshold for analysis
+auto_block: false
+alert_webhook: null
+
+# Output
+log_file: "logs/ndpi_agent_pcap.log"
+results_file: "results/pcap_analysis_results.json"
+save_malicious_flows: true
+
+# Stats
+stats_interval: 30  # More frequent stats for batch processing

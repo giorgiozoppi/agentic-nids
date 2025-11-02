@@ -1,0 +1,144 @@
+{
+  "name": "flow-classifier-agent",
+  "description": "Network flow classifier agent using machine learning for intrusion detection",
+  "version": "1.0.0",
+  "url": "https://localhost:50051/a2a",
+  "preferredTransport": "GRPC",
+  "additionalInterfaces": [
+    {
+      "url": "https://localhost:8080/a2a",
+      "transport": "HTTP"
+    },
+    {
+      "url": "grpc://localhost:50051",
+      "transport": "GRPC"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "flow_classification",
+      "name": "Flow Classification",
+      "description": "Classifies network flows using ML models in ONNX format",
+      "inputFormats": ["application/json"],
+      "outputFormats": ["application/json"],
+      "parameters": {
+        "required": [
+          "src_ip",
+          "dst_ip",
+          "src_port",
+          "dst_port",
+          "protocol",
+          "packets_forward",
+          "bytes_forward",
+          "duration"
+        ],
+        "optional": [
+          "detected_protocol",
+          "ndpi_protocol_id",
+          "tcp_flags",
+          "risk_score"
+        ]
+      }
+    },
+    {
+      "id": "anomaly_detection",
+      "name": "Anomaly Detection",
+      "description": "Detects anomalous network behavior patterns",
+      "inputFormats": ["application/json"],
+      "outputFormats": ["application/json"]
+    },
+    {
+      "id": "risk_assessment",
+      "name": "Risk Assessment",
+      "description": "Assesses security risk level of network flows",
+      "inputFormats": ["application/json"],
+      "outputFormats": ["application/json"]
+    },
+    {
+      "id": "explainable_ai",
+      "name": "Explainable AI",
+      "description": "Provides explanations for classification decisions",
+      "inputFormats": ["application/json"],
+      "outputFormats": ["application/json"],
+      "features": ["feature_importance", "shap_values", "text_explanation"]
+    }
+  ],
+  "models": {
+    "primary": {
+      "name": "FlowClassifier",
+      "version": "1.0.0",
+      "framework": "ONNX",
+      "type": "classification",
+      "classes": [
+        "normal",
+        "dos",
+        "ddos",
+        "probe",
+        "port_scan",
+        "brute_force",
+        "botnet",
+        "malware",
+        "r2l",
+        "u2r"
+      ],
+      "featureCount": 21
+    },
+    "anomaly": {
+      "name": "IsolationForest",
+      "version": "1.0.0",
+      "framework": "ONNX",
+      "type": "anomaly_detection"
+    }
+  },
+  "securitySchemes": {
+    "apiKey": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "X-API-Key",
+      "description": "API key for authentication"
+    },
+    "oauth2": {
+      "type": "oauth2",
+      "flows": {
+        "clientCredentials": {
+          "tokenUrl": "https://auth.example.com/token",
+          "scopes": {
+            "classify:flow": "Classify network flows",
+            "detect:anomaly": "Detect anomalies",
+            "assess:risk": "Assess risk"
+          }
+        }
+      }
+    }
+  },
+  "rateLimits": {
+    "requestsPerMinute": 1000,
+    "requestsPerHour": 50000,
+    "concurrentStreams": 10
+  },
+  "performance": {
+    "avgLatencyMs": 5,
+    "p95LatencyMs": 15,
+    "p99LatencyMs": 30,
+    "throughputPerSecond": 10000
+  },
+  "metadata": {
+    "author": "Agentic NIDS Team",
+    "license": "MIT",
+    "repository": "https://github.com/your-org/agentic-nids",
+    "documentation": "https://docs.example.com/flow-classifier-agent",
+    "supportedLanguages": ["en"],
+    "tags": [
+      "network-security",
+      "intrusion-detection",
+      "machine-learning",
+      "onnx",
+      "explainable-ai"
+    ]
+  },
+  "healthCheck": {
+    "endpoint": "/health",
+    "interval": 30,
+    "timeout": 5
+  }
+}

@@ -1,0 +1,77 @@
+# nDPI Flow Collector Agent Configuration
+
+# Collection Settings
+# Time interval (in seconds) to collect and send flows to classifier
+# Default: 180 seconds (3 minutes)
+collection_interval: 180
+
+# Flow timeout settings (seconds)
+flow_idle_timeout: 300      # 5 minutes - flows with no packets
+flow_active_timeout: 1800   # 30 minutes - long-running flows
+max_flows: 100000           # Maximum concurrent flows to track
+
+# Classifier Agent Settings
+# URL of the classifier agent (A2A protocol)
+# Supports: grpc://host:port or https://host:port
+classifier_agent_url: "grpc://localhost:50051"
+
+# Timeout for classification requests (seconds)
+classifier_timeout: 30
+
+# Number of flows to send in each batch
+batch_size: 100
+
+# Capture Settings
+# Network interface to capture from (e.g., eth0, wlan0)
+# Leave null to disable live capture
+capture_interface: null
+
+# PCAP file to process (for offline analysis)
+# Leave null to disable PCAP processing
+pcap_file: null
+
+# BPF filter for packet capture (optional)
+# Example: "tcp port 80 or tcp port 443"
+bpf_filter: null
+
+# Processing Settings
+# Enable asynchronous classification (parallel requests)
+enable_async_classification: true
+
+# Maximum number of concurrent classification requests
+max_concurrent_requests: 10
+
+# Retry configuration
+retry_attempts: 3
+retry_delay: 5  # seconds between retries
+
+# Action Settings
+# Risk score threshold for generating alerts (0.0 - 1.0)
+alert_threshold: 0.7
+
+# Automatically block malicious flows
+# WARNING: Enable only in controlled environments
+auto_block: false
+
+# Webhook URL for sending alerts (optional)
+# Example: "https://alerts.example.com/webhook"
+alert_webhook: null
+
+# Output Settings
+# Log file path (null for console only)
+log_file: "logs/ndpi_agent.log"
+
+# File to save classification results
+results_file: "results/classification_results.json"
+
+# Save detailed information about malicious flows
+save_malicious_flows: true
+
+# Performance Settings
+# Interval for printing statistics (seconds)
+stats_interval: 60
+
+# Advanced Settings (Optional)
+# nDPI-specific settings can be added here
+# ndpi_protocols_file: "config/ndpi_protocols.txt"
+# ndpi_categories_file: "config/ndpi_categories.txt"
