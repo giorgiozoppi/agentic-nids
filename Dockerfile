@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     gdb \
     make \
+    cmake \
     clang-tidy \
     clang-format \
     htop \
