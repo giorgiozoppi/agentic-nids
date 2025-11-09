@@ -10,6 +10,7 @@ RUN useradd -ms /bin/bash vscode
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    gdb \
     make \
     clang-tidy \
     clang-format \

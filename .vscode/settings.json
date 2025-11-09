@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "stdio.h": "c",
+    "ndpi_main.h": "c"
+  }
+}
