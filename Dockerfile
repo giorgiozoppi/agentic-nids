@@ -1,12 +1,12 @@
-# Use the latest official Python image (as of June 2025, Python 3.12 is current)
-FROM ubuntu:22.04
+# Use Ubuntu 24.04 which includes Python 3.12
+FROM ubuntu:24.04
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Create a non-root user for VS Code
 RUN useradd -ms /bin/bash vscode
 
-# Install essential utilities
+# Install essential utilities and Python 3.12
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -24,7 +24,14 @@ RUN apt-get update && apt-get install -y \
     libpcap-dev \
     apt-transport-https \
     gnupg \
-    ca-certificates
+    ca-certificates \
+    python3.12 \
+    python3.12-dev \
+    python3-pip
+
+# Set Python 3.12 as the default python3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    update-alternatives --set python3 /usr/bin/python3.12
 
 RUN curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor >bazel-archive-keyring.gpg && mv bazel-archive-keyring.gpg /usr/share/keyrings
 RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/bazel-archive-keyring.gpg] https://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list

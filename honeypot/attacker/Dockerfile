@@ -37,7 +37,6 @@ RUN apt-get update && apt-get install -y \
     wireshark-common \
     tshark \
     exploitdb \
-    searchsploit \
     netcat-traditional \
     socat \
     masscan \
