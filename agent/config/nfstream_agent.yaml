@@ -3,7 +3,7 @@
 # Collection Settings
 # Time interval (in seconds) to save collected flows to file
 # Default: 180 seconds (3 minutes)
-collection_interval: 180
+collection_interval: 60
 
 # Flow timeout settings (seconds)
 # idle_timeout: flows with no packets after this time are expired
@@ -12,7 +12,7 @@ idle_timeout: 120      # 2 minutes
 active_timeout: 1800   # 30 minutes
 
 # Number of flows to collect before saving to file
-batch_size: 100
+batch_size: 10
 
 # Capture Settings
 # Network interface to capture from (e.g., eth0, wlan0, "Intel(R) Wi-Fi 6")

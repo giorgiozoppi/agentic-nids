@@ -29,6 +29,7 @@ from nfstream import NFStreamer, NFPlugin
 from threading import Event
 from agents.llm.llm_explanation_agent import LLMExplanationAgent
 import base64
+from scapy.all import Raw
 
 NFSTREAM_AVAILABLE = True
 logger = logging.getLogger(__name__)
@@ -67,25 +68,36 @@ class PayloadExtractor(NFPlugin):
 
     def on_update(self, packet, flow):
         """Called for each packet in the flow"""
-        # Only capture if we haven't reached the limit
-        if hasattr(packet, 'payload') and packet.payload and len(packet.payload) > 0:
-            flow.udps.payload_packets_captured += 1
+        # NFStream packets expose a 'packet' attribute which is a Scapy packet
+        try:
+            # Access the Scapy packet object from NFStream packet
+            if hasattr(packet, 'packet') and packet.packet is not None:
+                scapy_pkt = packet.packet
 
-            # Determine direction based on packet direction flag
-            if packet.direction == 0:  # src -> dst
-                if flow.udps.src2dst_payload_size < self.max_payload_bytes:
-                    remaining = self.max_payload_bytes - flow.udps.src2dst_payload_size
-                    payload_chunk = packet.payload[:remaining]
-                    flow.udps.src2dst_payload += payload_chunk
-                    flow.udps.src2dst_payload_size += len(payload_chunk)
-                    logger.debug(f"PayloadExtractor: Captured {len(payload_chunk)} bytes (src->dst) - Total: {flow.udps.src2dst_payload_size}/{self.max_payload_bytes}")
-            else:  # dst -> src
-                if flow.udps.dst2src_payload_size < self.max_payload_bytes:
-                    remaining = self.max_payload_bytes - flow.udps.dst2src_payload_size
-                    payload_chunk = packet.payload[:remaining]
-                    flow.udps.dst2src_payload += payload_chunk
-                    flow.udps.dst2src_payload_size += len(payload_chunk)
-                    logger.debug(f"PayloadExtractor: Captured {len(payload_chunk)} bytes (dst->src) - Total: {flow.udps.dst2src_payload_size}/{self.max_payload_bytes}")
+                # Extract payload using Scapy's Raw layer
+                if scapy_pkt.haslayer(Raw):
+                    payload_data = bytes(scapy_pkt[Raw].load)
+
+                    if len(payload_data) > 0:
+                        flow.udps.payload_packets_captured += 1
+
+                        # Determine direction based on packet direction flag
+                        if packet.direction == 0:  # src -> dst
+                            if flow.udps.src2dst_payload_size < self.max_payload_bytes:
+                                remaining = self.max_payload_bytes - flow.udps.src2dst_payload_size
+                                payload_chunk = payload_data[:remaining]
+                                flow.udps.src2dst_payload += payload_chunk
+                                flow.udps.src2dst_payload_size += len(payload_chunk)
+                                logger.debug(f"PayloadExtractor: Captured {len(payload_chunk)} bytes (src->dst) - Total: {flow.udps.src2dst_payload_size}/{self.max_payload_bytes}")
+                        else:  # dst -> src
+                            if flow.udps.dst2src_payload_size < self.max_payload_bytes:
+                                remaining = self.max_payload_bytes - flow.udps.dst2src_payload_size
+                                payload_chunk = payload_data[:remaining]
+                                flow.udps.dst2src_payload += payload_chunk
+                                flow.udps.dst2src_payload_size += len(payload_chunk)
+                                logger.debug(f"PayloadExtractor: Captured {len(payload_chunk)} bytes (dst->src) - Total: {flow.udps.dst2src_payload_size}/{self.max_payload_bytes}")
+        except Exception as e:
+            logger.debug(f"PayloadExtractor: Error extracting payload: {e}")
 
 @dataclass
 class NFStreamAgentConfig:
@@ -659,10 +671,46 @@ async def run_agent(
     logger.info("=" * 80)
 
     try:
-        # Create LLM agent (mock or real)
-        logger.debug("Creating LLM Explanation Agent...")
-        llm_agent = LLMExplanationAgent()  # You may need to pass API key/config
-        logger.info("✓ LLM Explanation Agent created")
+        # Check for required LLM API keys
+        logger.debug("Checking for LLM API keys...")
+        import os
+        openai_key = os.getenv("OPENAI_API_KEY")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+        if not openai_key and not anthropic_key:
+            logger.error("=" * 80)
+            logger.error("ERROR: No LLM API key found!")
+            logger.error("=" * 80)
+            logger.error("The NFStream collector requires an LLM API key to analyze flows.")
+            logger.error("Please set one of the following environment variables:")
+            logger.error("  - OPENAI_API_KEY (for OpenAI GPT models)")
+            logger.error("  - ANTHROPIC_API_KEY (for Anthropic Claude models)")
+            logger.error("")
+            logger.error("Example:")
+            logger.error("  export ANTHROPIC_API_KEY='your-api-key-here'")
+            logger.error("  export OPENAI_API_KEY='your-api-key-here'")
+            logger.error("=" * 80)
+            import sys
+            sys.exit(1)
+
+        # Create LLM agent with available API key
+        llm_agent = None
+        if anthropic_key:
+            logger.debug("Found ANTHROPIC_API_KEY, creating Anthropic LLM agent...")
+            llm_agent = LLMExplanationAgent(
+                api_key=anthropic_key,
+                provider="anthropic",
+                model="claude-sonnet-4-5"
+            )
+            logger.info("✓ LLM Explanation Agent created (Anthropic Claude Sonnet 4.5)")
+        elif openai_key:
+            logger.debug("Found OPENAI_API_KEY, creating OpenAI LLM agent...")
+            llm_agent = LLMExplanationAgent(
+                api_key=openai_key,
+                provider="openai",
+                model="gpt-4o-mini"
+            )
+            logger.info("✓ LLM Explanation Agent created (OpenAI GPT-4o-mini)")
 
         logger.debug("Creating Mock A2A Collector...")
         a2a_collector = MockA2ACollector()
