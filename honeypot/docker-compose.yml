@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  # Attacker container with penetration testing tools
+  attacker:
+    build:
+      context: ./attacker
+      dockerfile: Dockerfile
+    container_name: honeypot-attacker
+    hostname: attacker
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "2201:22"  # SSH access from host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./shared:/shared
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://172.20.0.50:3100/loki/api/v1/push"
+        loki-external-labels: "job=honeypot,container=attacker"
+
+  # Victim server 1 - Running SMTP, HTTP, FTP
+  victim1:
+    build:
+      context: ./victim1
+      dockerfile: Dockerfile
+    container_name: honeypot-victim1
+    hostname: victim1
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "2202:22"   # SSH
+      - "8081:80"   # HTTP
+      - "2121:21"   # FTP
+      - "2525:25"   # SMTP
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./shared:/shared
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://172.20.0.50:3100/loki/api/v1/push"
+        loki-external-labels: "job=honeypot,container=victim1"
+
+  # Victim server 2 - Running SMTP, HTTP, FTP, PostgreSQL Honeypot
+  victim2:
+    build:
+      context: ./victim2
+      dockerfile: Dockerfile
+    container_name: honeypot-victim2
+    hostname: victim2
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.30
+    ports:
+      - "2203:22"   # SSH
+      - "8082:80"   # HTTP
+      - "2122:21"   # FTP
+      - "2526:25"   # SMTP
+      - "5433:5432" # PostgreSQL Honeypot (pghoney)
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./shared:/shared
+      - pghoney_logs:/var/log/pghoney
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://172.20.0.50:3100/loki/api/v1/push"
+        loki-external-labels: "job=honeypot,container=victim2"
+
+  # Victim server 3 - Running Redis Honeypot
+  victim3:
+    build:
+      context: ./victim3
+      dockerfile: Dockerfile
+    container_name: honeypot-victim3
+    hostname: victim3
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.40
+    ports:
+      - "2204:22"   # SSH
+      - "8083:80"   # HTTP
+      - "6380:6379" # Redis Honeypot
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./shared:/shared
+      - redis_logs:/var/log/redis-honeypot
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://172.20.0.50:3100/loki/api/v1/push"
+        loki-external-labels: "job=honeypot,container=victim3"
+
+  # Loki - Centralized log aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: honeypot-loki
+    hostname: loki
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.50
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+
+  # Grafana - Log visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: honeypot-grafana
+    hostname: grafana
+    networks:
+      honeypot_net:
+        ipv4_address: 172.20.0.51
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - loki
+
+networks:
+  honeypot_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
+
+volumes:
+  shared:
+  pghoney_logs:
+  redis_logs:
+  loki_data:
+  grafana_data:

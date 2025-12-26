@@ -25,16 +25,8 @@ import numpy as np
 
 # A2A SDK imports
 try:
-    from a2a_sdk import (
-        Agent,
-        AgentCard,
-        Task,
-        TaskStatus,
-        Message,
-        TextPart,
-        DataPart,
-        A2AServer,
-    )
+    from a2a.server import Agent, AgentCard, A2AServer
+    from a2a.types import Task, TaskStatus, Message, TextPart, DataPart
     A2A_AVAILABLE = True
 except ImportError:
     print("Warning: A2A SDK not installed. Install with: pip install a2a-sdk")

@@ -34,11 +34,7 @@ except ImportError:
 
 # A2A SDK imports
 try:
-    from a2a_sdk import (
-        Artifact,
-        TaskStatus,
-        Session,
-    )
+    from a2a.types import Artifact, TaskStatus, Session
     A2A_AVAILABLE = True
 except ImportError:
     print("Warning: A2A SDK not installed. Install with: pip install 'a2a-sdk>=0.3.4'")

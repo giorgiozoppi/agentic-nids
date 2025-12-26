@@ -35,7 +35,8 @@ from ndpi_collector_agent import NDPICollectorAgent, NDPIAgentConfig
 
 try:
     from client_a2a_example import SyntheticFlowGenerator
-    from a2a_sdk import A2AClient, Message, DataPart
+    from a2a.client.legacy import A2AClient
+    from a2a.types import Message, DataPart
     A2A_AVAILABLE = True
 except ImportError:
     A2A_AVAILABLE = False
