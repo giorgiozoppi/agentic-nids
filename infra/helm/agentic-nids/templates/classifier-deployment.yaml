@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-classifier
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: classifier-agent
+    component: ml-inference
+spec:
+  replicas: {{ .Values.classifier.replicas }}
+  selector:
+    matchLabels:
+      app: classifier-agent
+  template:
+    metadata:
+      labels:
+        app: classifier-agent
+    spec:
+      containers:
+      - name: classifier
+        image: {{ .Values.global.imageRegistry }}/{{ .Values.classifier.image }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        ports:
+        - containerPort: {{ .Values.classifier.port }}
+          name: grpc
+          protocol: TCP
+        env:
+        - name: CLASSIFIER_PORT
+          value: "{{ .Values.classifier.port }}"
+        - name: ONNX_MODEL_PATH
+          value: "{{ .Values.classifier.modelPath }}"
+        - name: NATS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ .Release.Name }}-config
+              key: natsUrl
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            cpu: {{ .Values.classifier.resources.requests.cpu }}
+            memory: {{ .Values.classifier.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.classifier.resources.limits.cpu }}
+            memory: {{ .Values.classifier.resources.limits.memory }}
+        livenessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-classifier-service
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: classifier-agent
+  ports:
+  - port: {{ .Values.classifier.port }}
+    targetPort: grpc
+    protocol: TCP
+    name: grpc
+  type: ClusterIP
+---
+{{- if .Values.classifier.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-classifier-hpa
+  namespace: {{ .Values.global.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-classifier
+  minReplicas: {{ .Values.classifier.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.classifier.autoscaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.classifier.autoscaling.targetCPUUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.classifier.autoscaling.targetMemoryUtilizationPercentage }}
+{{- end }}

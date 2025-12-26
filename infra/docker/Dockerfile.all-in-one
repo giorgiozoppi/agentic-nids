@@ -1,0 +1,37 @@
+# Multi-stage Dockerfile for Complete NIDS System
+# Includes: Classifier, Collector, LLM, PagerDuty, InfluxDB agents
+
+FROM python:3.11-slim AS base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    libpcap-dev \
+    tcpdump \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy and install Python dependencies
+COPY agent/pyproject.toml agent/README.md ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -e ".[all]"
+
+# Copy all agent code
+COPY agent/ ./
+
+# Create non-root user
+RUN groupadd -r nids && useradd -r -g nids nids && \
+    mkdir -p /app/logs /app/data /app/results && \
+    chown -R nids:nids /app
+
+USER nids
+
+# Expose ports
+EXPOSE 50051 8000 4222
+
+# Default command runs main orchestrator
+CMD ["python", "main.py", "--mode", "integrated"]

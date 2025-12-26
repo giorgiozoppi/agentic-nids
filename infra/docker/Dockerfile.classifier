@@ -1,0 +1,54 @@
+# Multi-stage Dockerfile for Classifier Agent
+# Stage 1: Build stage
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY agent/pyproject.toml agent/README.md ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir build && \
+    pip install --no-cache-dir .
+
+# Stage 2: Runtime stage
+FROM python:3.11-slim
+
+# Create non-root user
+RUN groupadd -r nids && useradd -r -g nids nids
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY agent/classifier_agent_a2a.py ./
+COPY agent/agent_card.json ./
+COPY agent/models/ ./models/
+
+# Create directories
+RUN mkdir -p /app/logs && \
+    chown -R nids:nids /app
+
+# Switch to non-root user
+USER nids
+
+# Expose gRPC port
+EXPOSE 50051
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import socket; s=socket.socket(); s.connect(('localhost',50051)); s.close()"
+
+# Run classifier agent
+CMD ["python", "classifier_agent_a2a.py", "--host", "0.0.0.0", "--port", "50051"]

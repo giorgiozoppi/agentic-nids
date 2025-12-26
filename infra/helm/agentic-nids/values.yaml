@@ -1,0 +1,175 @@
+# Helm Chart Values for Agentic NIDS
+# Override these values with your own configuration
+
+# Global settings
+global:
+  namespace: nids
+  imageRegistry: docker.io
+  imagePullPolicy: IfNotPresent
+
+# NATS Message Broker
+nats:
+  enabled: true
+  image: nats:2.10
+  port: 4222
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Classifier Agent (XGBoost ML)
+classifier:
+  enabled: true
+  image: jozoppi/agentic-nids-classifier:latest
+  replicas: 2
+  port: 50051
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  modelPath: /app/models/xgboost_model.onnx
+
+# Collector Agent (nDPI)
+collector:
+  enabled: true
+  image: jozoppi/agentic-nids-collector:latest
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  config:
+    collectionInterval: 180  # 3 minutes
+    batchSize: 100
+    maxConcurrentRequests: 10
+
+# LLM Explanation Agent
+llm:
+  enabled: true
+  image: jozoppi/agentic-nids-llm:latest
+  replicas: 2
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  model: gpt-4o-mini
+  temperature: 0.3
+
+# PagerDuty Alert Agent
+pagerduty:
+  enabled: false
+  image: jozoppi/agentic-nids-pagerduty:latest
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# InfluxDB Time-Series Database
+influxdb:
+  enabled: true
+  image: influxdb:2.7
+  replicas: 1
+  port: 8086
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 50Gi
+
+  config:
+    org: nids
+    bucket: network_security
+    retentionDays: 7
+
+# Vue.js Dashboard
+ui:
+  enabled: true
+  image: jozoppi/agentic-nids-ui:latest
+  replicas: 2
+  port: 80
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  service:
+    type: LoadBalancer
+    port: 80
+
+# Network Policies
+networkPolicy:
+  enabled: true
+  allowExternalUI: true
+  allowExternalNATS: false
+
+# Secrets
+secrets:
+  # OpenAI API Key for LLM
+  openaiApiKey: ""
+
+  # PagerDuty Routing Key
+  pagerdutyRoutingKey: ""
+
+  # InfluxDB Token
+  influxdbToken: ""
+
+# ConfigMaps
+configMaps:
+  natsUrl: "nats://nats-service:4222"
+  classifierUrl: "grpc://classifier-service:50051"
+  influxdbUrl: "http://influxdb-service:8086"

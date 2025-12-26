@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-influxdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: influxdb
+    component: storage
+spec:
+  serviceName: {{ .Release.Name }}-influxdb-service
+  replicas: {{ .Values.influxdb.replicas }}
+  selector:
+    matchLabels:
+      app: influxdb
+  template:
+    metadata:
+      labels:
+        app: influxdb
+    spec:
+      containers:
+      - name: influxdb
+        image: {{ .Values.influxdb.image }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        ports:
+        - containerPort: {{ .Values.influxdb.port }}
+          name: http
+        env:
+        - name: DOCKER_INFLUXDB_INIT_MODE
+          value: "setup"
+        - name: DOCKER_INFLUXDB_INIT_USERNAME
+          value: "admin"
+        - name: DOCKER_INFLUXDB_INIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-secrets
+              key: influxdbPassword
+        - name: DOCKER_INFLUXDB_INIT_ORG
+          value: {{ .Values.influxdb.config.org }}
+        - name: DOCKER_INFLUXDB_INIT_BUCKET
+          value: {{ .Values.influxdb.config.bucket }}
+        - name: DOCKER_INFLUXDB_INIT_RETENTION
+          value: "{{ .Values.influxdb.config.retentionDays }}d"
+        - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-secrets
+              key: influxdbToken
+        resources:
+          requests:
+            cpu: {{ .Values.influxdb.resources.requests.cpu }}
+            memory: {{ .Values.influxdb.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.influxdb.resources.limits.cpu }}
+            memory: {{ .Values.influxdb.resources.limits.memory }}
+        volumeMounts:
+        - name: influxdb-data
+          mountPath: /var/lib/influxdb2
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+  {{- if .Values.influxdb.persistence.enabled }}
+  volumeClaimTemplates:
+  - metadata:
+      name: influxdb-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      {{- if .Values.influxdb.persistence.storageClass }}
+      storageClassName: {{ .Values.influxdb.persistence.storageClass }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.influxdb.persistence.size }}
+  {{- else }}
+      volumes:
+      - name: influxdb-data
+        emptyDir: {}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-influxdb-service
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: influxdb
+  ports:
+  - port: {{ .Values.influxdb.port }}
+    targetPort: http
+    protocol: TCP
+    name: http
+  type: ClusterIP

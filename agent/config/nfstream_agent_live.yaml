@@ -1,0 +1,30 @@
+# NFStream Flow Collector Agent Configuration - Live Capture Mode
+
+# Collection Settings
+collection_interval: 180  # Save flows every 3 minutes
+idle_timeout: 120
+active_timeout: 1800
+batch_size: 100
+
+# Capture Settings - Live Capture Mode
+capture_interface: "eth0"  # Update with your network interface
+pcap_file: null
+bpf_filter: null  # Optional: "tcp port 80 or tcp port 443"
+promiscuous_mode: true
+snapshot_length: 1536
+
+# NFStream Settings - Optimized for live capture
+decode_tunnels: true
+n_dissections: 20  # Full nDPI analysis
+statistical_analysis: true
+splt_analysis: 0  # Disabled for live capture (performance)
+system_visibility_mode: 1  # Capture process information (requires root)
+max_nflows: 100000  # Limit to prevent memory issues
+performance_report: 0
+
+# Output Settings
+log_file: null
+flows_output_file: "collected_flows_live.jsonl"
+
+# Performance Settings
+stats_interval: 60

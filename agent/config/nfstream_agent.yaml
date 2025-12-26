@@ -1,0 +1,75 @@
+# NFStream Flow Collector Agent Configuration
+
+# Collection Settings
+# Time interval (in seconds) to save collected flows to file
+# Default: 180 seconds (3 minutes)
+collection_interval: 180
+
+# Flow timeout settings (seconds)
+# idle_timeout: flows with no packets after this time are expired
+# active_timeout: long-running flows are expired after this time
+idle_timeout: 120      # 2 minutes
+active_timeout: 1800   # 30 minutes
+
+# Number of flows to collect before saving to file
+batch_size: 100
+
+# Capture Settings
+# Network interface to capture from (e.g., eth0, wlan0, "Intel(R) Wi-Fi 6")
+# Leave null to disable live capture
+capture_interface: null
+
+# PCAP file to process (for offline analysis)
+# Leave null to disable PCAP processing
+pcap_file: null
+
+# BPF filter for packet capture (optional)
+# Example: "tcp port 80 or tcp port 443"
+bpf_filter: null
+
+# Promiscuous mode (capture all packets on the network)
+promiscuous_mode: true
+
+# Maximum bytes to capture per packet
+snapshot_length: 1536
+
+# NFStream-Specific Settings
+# Decode tunnel protocols (VXLAN, GRE, etc.)
+decode_tunnels: true
+
+# Number of nDPI dissections for deep packet inspection
+# Higher values provide more detailed application identification
+# Range: 0-20 (0 = disabled, 20 = maximum)
+n_dissections: 20
+
+# Enable statistical analysis
+# Extracts statistical features like min/mean/max/stddev of packet sizes and IAT
+statistical_analysis: true
+
+# Early flow features (SPLT analysis)
+# Number of packets to capture for early classification (0 = disabled, 1-255)
+# Captures sequence of packet sizes, directions, and inter-arrival times
+splt_analysis: 0
+
+# System visibility mode
+# 0 = disabled, 1 = enabled (captures process name, PID, etc.)
+# Note: Requires root/admin privileges on most systems
+system_visibility_mode: 0
+
+# Maximum number of flows to track (0 = unlimited)
+max_nflows: 0
+
+# NFStream performance reporting
+# 0 = disabled, 1 = enabled (prints performance metrics)
+performance_report: 0
+
+# Output Settings
+# Log file path (null for console only)
+log_file: null
+
+# JSONL file to save collected flows (one JSON object per line)
+flows_output_file: "collected_flows.jsonl"
+
+# Performance Settings
+# Interval for printing statistics (seconds)
+stats_interval: 60

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-docusaurus@latest:*)",
+      "Bash(npm install:*)",
+      "Bash(docker build:*)",
+      "Bash(uv sync:*)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(docker run:*)",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "Bash(tree agent:*)",
+      "Bash(source ../.venv/bin/activate:*)",
+      "Bash(source agent/.venv/bin/activate)",
+      "Bash(uv run python:*)",
+      "Bash(sudo uv run python:*)",
+      "Bash(pkill:*)",
+      "Bash(sudo -n true:*)"
+    ]
+  }
+}

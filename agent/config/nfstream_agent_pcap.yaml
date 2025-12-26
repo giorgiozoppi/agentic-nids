@@ -1,0 +1,30 @@
+# NFStream Flow Collector Agent Configuration - PCAP File Analysis
+
+# Collection Settings
+collection_interval: 30  # Faster saves for PCAP analysis
+idle_timeout: 120
+active_timeout: 1800
+batch_size: 200  # Larger batches for PCAP processing
+
+# Capture Settings - PCAP File Mode
+capture_interface: null
+pcap_file: "data/traffic.pcap"  # Update with your PCAP file path
+bpf_filter: null
+promiscuous_mode: true
+snapshot_length: 1536
+
+# NFStream Settings - Optimized for PCAP analysis
+decode_tunnels: true
+n_dissections: 20  # Full nDPI analysis
+statistical_analysis: true  # Extract all statistical features
+splt_analysis: 10  # Capture first 10 packets for early classification
+system_visibility_mode: 0  # Not available for PCAP files
+max_nflows: 0
+performance_report: 1  # Show performance metrics for PCAP analysis
+
+# Output Settings
+log_file: null
+flows_output_file: "collected_flows_pcap.jsonl"
+
+# Performance Settings
+stats_interval: 10  # More frequent stats for PCAP
