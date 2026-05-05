@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: honeypot
+
+resources:
+  - namespace.yaml
+  - configmaps.yaml
+  - pvcs.yaml
+  - rbac-promtail.yaml
+  - loki.yaml
+  - grafana.yaml
+  - promtail.yaml
+  - attacker.yaml
+  - victim1.yaml
+  - victim2.yaml
+  - victim3.yaml

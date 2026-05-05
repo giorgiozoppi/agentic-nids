@@ -1,0 +1,51 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attacker
+  labels:
+    app: attacker
+    app.kubernetes.io/part-of: honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attacker
+  template:
+    metadata:
+      labels:
+        app: attacker
+        app.kubernetes.io/part-of: honeypot
+    spec:
+      containers:
+        - name: attacker
+          image: honeypot-attacker:latest
+          imagePullPolicy: Never
+          stdin: true
+          tty: true
+          ports:
+            - name: ssh
+              containerPort: 22
+              hostPort: 2201
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN, NET_RAW]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: attacker
+spec:
+  selector:
+    app: attacker
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+  type: ClusterIP

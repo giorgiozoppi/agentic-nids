@@ -1,0 +1,9 @@
+{
+    "host": "0.0.0.0",
+    "port": 5432,
+    "logfile": "/var/log/pghoney/pghoney.log",
+    "database": "honeypot",
+    "username": "postgres",
+    "password": "postgres",
+    "fake_version": "PostgreSQL 12.2"
+}

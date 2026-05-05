@@ -1,0 +1,73 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victim2
+  labels:
+    app: victim2
+    app.kubernetes.io/part-of: honeypot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victim2
+  template:
+    metadata:
+      labels:
+        app: victim2
+        app.kubernetes.io/part-of: honeypot
+    spec:
+      containers:
+        - name: victim2
+          image: honeypot-victim2:latest
+          imagePullPolicy: Never
+          stdin: true
+          tty: true
+          ports:
+            - name: ssh
+              containerPort: 22
+              hostPort: 2203
+            - name: http
+              containerPort: 80
+              hostPort: 8082
+            - name: ftp
+              containerPort: 21
+              hostPort: 2122
+            - name: smtp
+              containerPort: 25
+              hostPort: 2526
+            - name: postgres
+              containerPort: 5432
+              hostPort: 5433
+          volumeMounts:
+            - name: pghoney-logs
+              mountPath: /var/log/pghoney
+      volumes:
+        - name: pghoney-logs
+          persistentVolumeClaim:
+            claimName: pghoney-logs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victim2
+spec:
+  selector:
+    app: victim2
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: ftp
+      port: 21
+      targetPort: 21
+    - name: smtp
+      port: 25
+      targetPort: 25
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
