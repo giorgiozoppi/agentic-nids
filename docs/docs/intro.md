@@ -4,96 +4,57 @@ sidebar_position: 1
 
 # Introduction to Agentic NIDS
 
-**Agentic Network Intrusion Detection System** is an AI-powered network security platform that combines machine learning, explainable AI, and multi-agent architecture for real-time threat detection and automated incident response.
+**Agentic NIDS** is an AI-powered network intrusion detection system that combines deep packet inspection, a LangGraph-orchestrated agent workflow, and ClickHouse analytics to detect and explain network threats in real time.
+
+## How It Works
+
+```mermaid
+graph LR
+    NET["Network Interface\nor PCAP File"] --> COL["NFStream\nCollector Agent"]
+    COL --> BATCH["Flow Batch\n(configurable size)"]
+
+    subgraph GRAPH["NIDS LangGraph Workflow"]
+        ANA["analyze_batch\nReAct Agent"] -->|success| SAV["save_batch"]
+        ANA -->|"retry ≤ 3"| ANA
+    end
+
+    BATCH --> GRAPH
+
+    ANA <-->|"investigate_flows tool"| DSA["Deep Search\nSub-Agent"]
+    DSA <--> CH[("ClickHouse\nnids.flows")]
+    SAV --> CH
+    SAV -.->|fallback| JSONL["JSONL File"]
+```
+
+1. **NFStream Collector** captures packets from a live interface or PCAP file. nDPI identifies 300+ application protocols. Flows are accumulated into batches.
+2. **LangGraph Workflow** processes each batch through two nodes — `analyze_batch` then `save_batch`.
+3. **Analyze node** runs a ReAct LLM agent. The agent can call `investigate_flows` to query historical traffic in ClickHouse mid-analysis before producing its threat summary.
+4. **Save node** writes flows and the LLM summary to ClickHouse (JSONL fallback if ClickHouse is unavailable).
 
 ## Key Features
 
-- 🤖 **Multi-Agent Architecture** - Distributed agents communicating via NATS and A2A protocol
-- 🧠 **ML-Powered Detection** - XGBoost models in ONNX format for cross-platform inference
-- 💡 **Explainable AI** - LLM-generated threat explanations (GPT-4, Claude Opus)
-- 📊 **Real-Time Analytics** - InfluxDB time-series storage with Grafana integration
-- 🚨 **Automated Alerts** - PagerDuty integration with priority-based incident creation
-- ☸️ **Cloud-Native** - Kubernetes-ready with Helm charts and auto-scaling
-- 🔍 **Deep Packet Inspection** - nDPI integration for Layer 7 protocol detection
-
-## System Overview
-
-```mermaid
-graph TD
-    A[Network Traffic] --> B[Packet Capture Agent]
-    B -->|nDPI| C[Flow Extraction]
-    C -->|NATS| D[Message Broker]
-    D --> E[XGBoost Classifier]
-    E -->|ML Results| F[LLM Explanation Agent]
-    F --> G{Malicious?}
-    G -->|Yes| H[PagerDuty Alerts]
-    G -->|All| I[InfluxDB Storage]
-    I --> J[Vue.js Dashboard]
-
-    style A fill:#e1f5ff
-    style E fill:#fff4e6
-    style F fill:#f3e5f5
-    style H fill:#ffebee
-    style I fill:#e8f5e9
-```
-
-## Quick Start
-
-Get started in 5 minutes:
-
-```bash
-# Install dependencies
-cd agent
-pip install -e ".[all]"
-
-# Set API keys
-export OPENAI_API_KEY="sk-..."
-# Or use Anthropic Claude
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# Run quick test
-python main.py --mode test
-```
-
-## Architecture Highlights
-
-### 1. Agent Layer
-- **Packet Capture**: nfstream + nDPI for deep inspection
-- **Classifier**: ONNX Runtime with XGBoost models
-- **LLM Explainer**: OpenAI GPT-4 or Anthropic Claude Opus
-- **Alert Manager**: PagerDuty Events API v2
-- **Storage**: InfluxDB time-series database
-
-### 2. Communication
-- **NATS**: High-performance message broker (10M+ msg/sec)
-- **Agent2Agent (A2A)**: gRPC streaming for ML inference
-- **REST APIs**: InfluxDB, PagerDuty integration
-
-### 3. Deployment
-- **Docker**: Multi-stage builds for optimized images
-- **Kubernetes**: Helm charts with HPA auto-scaling
-- **Cloud-Ready**: AWS, GCP, Azure compatible
+- **nDPI Deep Packet Inspection** — Layer 7 protocol detection for 300+ applications
+- **LangGraph State Machine** — explicit, retryable pipeline with up to 3 LLM retries
+- **ReAct Analysis Agent** — LLM calls tools mid-analysis to investigate suspicious IPs, ports, and applications in ClickHouse
+- **ClickHouse Storage** — columnar analytics with 30-day TTL, day-based partitioning, LowCardinality compression
+- **Dual LLM Support** — Anthropic Claude or OpenAI GPT (key auto-detected from env)
+- **PCAP and Live Capture** — works offline or on a live interface
+- **Graceful Degradation** — JSONL fallback if ClickHouse is down; analysis-only mode if no LLM key is set
 
 ## Performance
 
-| Metric | Specification |
-|--------|---------------|
-| Packet Capture | 10,000 flows/sec |
-| ML Inference | &lt;10ms per flow |
-| LLM Explanation | 1-3 seconds |
-| End-to-End | &lt;5 seconds |
-
-## Use Cases
-
-1. **Enterprise SOC** - Real-time threat detection and response
-2. **PCAP Analysis** - Offline traffic investigation
-3. **Compliance** - Security audit trails
-4. **Research** - ML model evaluation for network security
-5. **Incident Response** - Automated triage and prioritization
+| Metric | Value |
+|--------|-------|
+| Flow features extracted | 30+ per flow |
+| Batch analysis latency | 2–8 s (LLM-bound) |
+| LLM retries on failure | up to 3 |
+| ClickHouse insert | batched, columnar |
+| Flow history retention | 30 days (configurable TTL) |
 
 ## Next Steps
 
-- [Architecture Overview](./architecture/overview) - Understand the system design
-- [Quick Start Guide](./getting-started/quick-start) - Get up and running
-- [Deployment Guide](./deployment/kubernetes) - Production deployment
-- [API Reference](./api/agents) - Agent APIs and configuration
+- [Quick Start](./getting-started/quick-start) — up and running in 5 minutes
+- [Architecture Overview](./architecture/overview) — system design
+- [LangGraph Workflow](./architecture/workflow) — state machine details
+- [NFStream Collector](./agents/nfstream-collector) — flow collection and feature extraction
+- [ClickHouse Storage](./storage/clickhouse) — schema, queries, and tuning

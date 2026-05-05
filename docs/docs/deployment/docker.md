@@ -1,136 +1,110 @@
 ---
-sidebar_position: 2
+sidebar_position: 1
 ---
 
 # Docker Deployment
 
-Deploy Agentic NIDS using Docker and Docker Compose.
-
-## Docker Compose (Recommended)
-
-### 1. Create `docker-compose.yml`
+## Docker Compose
 
 ```yaml
+# docker-compose.yml
 version: '3.8'
 
 services:
-  nats:
-    image: nats:2.10
-    container_name: nids-nats
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: nids-clickhouse
     ports:
-      - "${NATS_PORT:-4222}:4222"
-      - "8222:8222"
+      - "8123:8123"
+      - "9000:9000"
     environment:
-      - NATS_URL=nats://nats:4222
-
-  influxdb:
-    image: influxdb:2.7
-    container_name: nids-influxdb
-    ports:
-      - "${INFLUXDB_PORT:-8086}:8086"
-    environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-password123}
-      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-nids}
-      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-network_security}
-      - DOCKER_INFLUXDB_INIT_RETENTION=${INFLUXDB_RETENTION:-7d}
+      CLICKHOUSE_DB: nids
+      CLICKHOUSE_USER: nids_agent
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-changeme}
     volumes:
-      - influxdb-data:/var/lib/influxdb2
-
-  classifier:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.classifier
-    container_name: nids-classifier
-    ports:
-      - "${CLASSIFIER_PORT:-50051}:50051"
-    environment:
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-    depends_on:
-      - nats
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   nids:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.all-in-one
-    container_name: nids-app
-    environment:
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY}
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-      - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
-      - INFLUXDB_ORG=${INFLUXDB_ORG:-nids}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-network_security}
+    container_name: nids-agent
     depends_on:
-      - nats
-      - influxdb
-      - classifier
+      clickhouse:
+        condition: service_healthy
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY:    ${OPENAI_API_KEY}
+      CLICKHOUSE_HOST:     clickhouse
+      CLICKHOUSE_PORT:     8123
+      CLICKHOUSE_DATABASE: nids
+      CLICKHOUSE_USERNAME: nids_agent
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-changeme}
+    volumes:
+      - ./agent/config:/app/config:ro
+      - flows-output:/app/output
+    # Uncomment for live capture:
+    # network_mode: host
+    # cap_add: [NET_RAW, NET_ADMIN]
 
 volumes:
-  influxdb-data:
+  clickhouse-data:
+  flows-output:
 ```
 
-### 2. Create `.env` File
+## `.env` File
 
 ```bash
-# LLM Provider
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-opus-4-5
-
-# API Keys
-OPENAI_API_KEY=sk-...
+# Pick one LLM provider
 ANTHROPIC_API_KEY=sk-ant-...
-PAGERDUTY_ROUTING_KEY=R0...
+OPENAI_API_KEY=sk-...
 
-# Service URLs (optional, use defaults)
-NATS_URL=nats://nats:4222
-INFLUXDB_URL=http://influxdb:8086
-
-# InfluxDB Config
-INFLUXDB_ORG=nids
-INFLUXDB_BUCKET=network_security
-INFLUXDB_PASSWORD=secure-password-here
-INFLUXDB_RETENTION=30d
-
-# Ports (optional)
-NATS_PORT=4222
-INFLUXDB_PORT=8086
-CLASSIFIER_PORT=50051
+# ClickHouse
+CLICKHOUSE_PASSWORD=strong-password-here
 ```
 
-### 3. Start Services
+## Start and Inspect
 
 ```bash
 # Start all services
 docker-compose up -d
 
-# View logs
-docker-compose logs -f
+# Follow NIDS agent logs
+docker-compose logs -f nids
 
-# Stop services
+# Follow ClickHouse logs
+docker-compose logs -f clickhouse
+
+# Stop
 docker-compose down
 ```
 
-## Environment Variables
+## Analyse a PCAP File
 
-All configuration uses environment variables:
+Mount the PCAP and override the source:
 
-| Variable | Default | Required | Description |
-|----------|---------|----------|-------------|
-| `LLM_PROVIDER` | `openai` | No | LLM provider |
-| `LLM_MODEL` | `gpt-4o-mini` | No | Model name |
-| `OPENAI_API_KEY` | - | If provider=openai | OpenAI key |
-| `ANTHROPIC_API_KEY` | - | If provider=anthropic | Anthropic key |
-| `NATS_URL` | `nats://localhost:4222` | No | NATS server |
-| `INFLUXDB_URL` | `http://localhost:8086` | No | InfluxDB server |
-| `INFLUXDB_ORG` | `nids` | No | Organization |
-| `INFLUXDB_BUCKET` | `network_security` | No | Bucket name |
+```bash
+docker run --rm \
+  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+  -e CLICKHOUSE_HOST=host.docker.internal \
+  -v $(pwd)/capture.pcap:/data/capture.pcap:ro \
+  nids-agent \
+  nfstream-collector --pcap /data/capture.pcap --output /tmp/flows.jsonl
+```
 
-## Next Steps
+## Verify ClickHouse
 
-- [Kubernetes Deployment](./kubernetes) - Production deployment
-- [Configuration](../guides/configuration) - Advanced configuration
+```bash
+# Check the schema was created
+docker exec nids-clickhouse \
+  clickhouse-client --query "SHOW TABLES FROM nids"
+
+# Count stored flows
+docker exec nids-clickhouse \
+  clickhouse-client --query "SELECT count() FROM nids.flows"
+```

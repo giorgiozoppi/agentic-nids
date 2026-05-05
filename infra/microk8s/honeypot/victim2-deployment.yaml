@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeypot-victim2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: honeypot-victim2
+  template:
+    metadata:
+      labels:
+        app: honeypot-victim2
+    spec:
+      containers:
+      - name: victim2
+        image: honeypot-victim2:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 22
+        - containerPort: 80
+        - containerPort: 21
+        - containerPort: 25
+        - containerPort: 5432
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: pghoney-logs
+          mountPath: /var/log/pghoney
+        stdin: true
+        tty: true
+      volumes:
+      - name: shared
+        hostPath:
+          path: /tmp/honeypot-shared
+          type: DirectoryOrCreate
+      - name: pghoney-logs
+        hostPath:
+          path: /tmp/pghoney-logs
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeypot-victim2
+spec:
+  type: NodePort
+  selector:
+    app: honeypot-victim2
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 32203
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 38082
+    - name: ftp
+      port: 21
+      targetPort: 21
+      nodePort: 32122
+    - name: smtp
+      port: 25
+      targetPort: 25
+      nodePort: 32526
+    - name: pghoney
+      port: 5432
+      targetPort: 5432
+      nodePort: 35433

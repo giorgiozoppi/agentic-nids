@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeypot-loki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: honeypot-loki
+  template:
+    metadata:
+      labels:
+        app: honeypot-loki
+    spec:
+      containers:
+      - name: loki
+        image: grafana/loki:latest
+        ports:
+        - containerPort: 3100
+        volumeMounts:
+        - name: loki-data
+          mountPath: /loki
+        args: ["-config.file=/etc/loki/local-config.yaml"]
+      volumes:
+      - name: loki-data
+        hostPath:
+          path: /tmp/loki-data
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeypot-loki
+spec:
+  type: NodePort
+  selector:
+    app: honeypot-loki
+  ports:
+    - name: loki
+      port: 3100
+      targetPort: 3100
+      nodePort: 33100

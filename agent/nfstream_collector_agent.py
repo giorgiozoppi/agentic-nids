@@ -18,18 +18,15 @@ This agent:
 import asyncio
 import logging
 import time
-import yaml
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Iterator
-from dataclasses import dataclass, field
-from datetime import datetime
-import signal
+from typing import Dict, List, Optional
 from nfstream import NFStreamer, NFPlugin
 from threading import Event
 from agents.llm.llm_explanation_agent import LLMExplanationAgent
 import base64
 from scapy.all import Raw
+from models import NFStreamAgentConfig, PROTOCOL_MAP
 
 NFSTREAM_AVAILABLE = True
 logger = logging.getLogger(__name__)
@@ -204,10 +201,11 @@ class NFStreamCollectorAgent:
     - JSONL output format for offline analysis
     """
 
-    def __init__(self, config: NFStreamAgentConfig):
+    def __init__(self, config: NFStreamAgentConfig, clickhouse_store=None):
         """Initialize NFStream collector agent"""
-     
+
         self.config = config
+        self.clickhouse_store = clickhouse_store
         self.running = False
         self.streamer: Optional[NFStreamer] = None
         self.flow_buffer: List[Dict] = []
@@ -370,41 +368,13 @@ class NFStreamCollectorAgent:
             return proto.upper()
         return str(proto)
 
-    async def save_raw_flows(self, flows: List[Dict]):
-        """
-        Save raw flow data to JSONL file (one JSON object per line).
-
-        Args:
-            flows: List of flow dictionaries to save
-        """
-        if not self.config.flows_output_file:
-            logger.warning("No output file configured, flows will not be saved")
-            return
-
-        import json
-        try:
-            # Append to JSONL file (one JSON object per line)
-            with open(self.config.flows_output_file, 'a') as f:
-                for flow in flows:
-                    # Add timestamp
-                    flow['collected_at'] = datetime.now().isoformat()
-                    f.write(json.dumps(flow) + '\n')
-                    self.stats['flows_saved'] += 1
-
-            logger.info(f"Saved {len(flows)} flows to {self.config.flows_output_file}")
-        except Exception as e:
-            logger.error(f"Failed to save raw flows: {e}")
-
-    async def collect_flows(self, llm_agent=None, a2a_collector=None):
+    async def collect_flows(self, llm_agent=None):
         """
         Continuously collect flows from NFStreamer in background.
 
         This method runs NFStream collection in a separate thread to avoid blocking
         the async event loop, while maintaining a queue for flow processing.
         """
-        import threading
-        import queue
-
         logger.info("=" * 80)
         logger.info("Starting continuous flow collection")
         logger.info("=" * 80)
@@ -435,7 +405,7 @@ class NFStreamCollectorAgent:
 
                 if len(batch) >= self.config.batch_size:
                     logger.info(f"\n🔄 Batch full ({len(batch)} flows) - processing...")
-                    await self._process_and_send_batch(batch, llm_agent, a2a_collector)
+                    await self._process_batch(batch, llm_agent)
                     logger.info("✓ Batch processed successfully\n")
                     batch = []
             except Exception as e:
@@ -445,64 +415,47 @@ class NFStreamCollectorAgent:
         # Process any remaining flows
         if batch:
             logger.info(f"\n🔄 Processing final batch ({len(batch)} flows)...")
-            await self._process_and_send_batch(batch, llm_agent, a2a_collector)
+            await self._process_batch(batch, llm_agent)
             logger.info("✓ Final batch processed successfully\n")
 
-    async def _process_and_send_batch(self, batch, llm_agent, a2a_collector):
-        """
-        Process a batch of flows, call the LLM (OpenAI or Anthropic), and send the result to the A2A collector.
-        """
-        logger.debug("Building LLM prompt...")
+    async def _process_batch(self, batch: List[Dict], llm_agent):
+        """Process a batch of flows through the NIDS LangGraph pipeline (analyze → save)."""
+        from agents.nids_graph import nids_graph
+
         prompt = self.config.llm_prompt or (
-            "You are a network security expert. Given the following batch of network flows (in JSON format), "
-            "analyze the flows for any signs of anomalies, suspicious activity, or potential threats. "
-            "For each anomaly you find, provide: a clear description, the flow(s) involved, and hints. "
-            "If no anomalies are found, briefly state that the batch appears normal.\n\nFlows:\n" +
-            json.dumps(batch, indent=2)
+            "You are a network security expert. Analyze the following network flows for anomalies and threats.\n\n"
+            "Flows:\n" + json.dumps(batch, indent=2)
         )
-        if '{flows}' in prompt:
-            prompt = prompt.replace('{flows}', json.dumps(batch, indent=2))
+        if "{flows}" in prompt:
+            prompt = prompt.replace("{flows}", json.dumps(batch, indent=2))
 
-        logger.info(f"📤 Sending batch of {len(batch)} flows to LLM agent for analysis...")
-        llm_result = {"anomalies": [], "summary": "(No LLM agent configured)"}
-        if llm_agent:
-            try:
-                logger.debug("Calling LLM agent analyze_flows()...")
-                llm_result = await llm_agent.analyze_flows(batch, prompt)
-                logger.info("✓ LLM analysis completed")
-                # Print LLM response
-                logger.info("=" * 80)
-                logger.info("LLM RESPONSE")
-                logger.info("=" * 80)
-                logger.info(json.dumps(llm_result, indent=2))
-                logger.info("=" * 80)
-            except Exception as e:
-                logger.error(f"✗ LLM agent error: {e}")
-                llm_result = {"anomalies": [], "summary": f"LLM error: {e}"}
-        else:
-            logger.warning("⚠ No LLM agent configured - skipping analysis")
+        result = await nids_graph.ainvoke(
+            {
+                "flows": batch,
+                "prompt": prompt,
+                "llm_analysis": None,
+                "errors": [],
+                "retry_count": 0,
+            },
+            config={
+                "configurable": {
+                    "llm": llm_agent.llm if llm_agent else None,
+                    "clickhouse_store": self.clickhouse_store,
+                    "flows_output_file": self.config.flows_output_file,
+                }
+            },
+        )
 
-        logger.debug("Combining flows with LLM analysis...")
-        combined = {
-            "flows": batch,
-            "llm_analysis": llm_result
-        }
+        self.stats["flows_saved"] += len(batch)
+        if result.get("errors"):
+            logger.warning(f"Batch completed with errors: {result['errors']}")
+        summary = (result.get("llm_analysis") or {}).get("summary", "N/A")
+        logger.info(f"Batch done — LLM summary: {summary[:120]}")
 
-        if a2a_collector:
-            logger.info("📡 Sending combined data to A2A collector...")
-            await a2a_collector.process_combined(combined)
-            logger.info("✓ Data sent to A2A collector")
-        else:
-            logger.warning("⚠ No A2A collector configured - data not sent")
-
-    async def run(self, llm_agent=None, a2a_collector=None):
-        """
-        Run the NFStream collector agent continuously.
-
-        Runs in a loop until SIGTERM/SIGINT is received, then performs graceful shutdown.
-        """
+    async def run(self, llm_agent=None):
+        """Run the NFStream collector agent continuously."""
         self.running = True
-        await self.collect_flows(llm_agent=llm_agent, a2a_collector=a2a_collector)
+        await self.collect_flows(llm_agent=llm_agent)
     
     def stop(self):
         """
@@ -540,15 +493,6 @@ class NFStreamCollectorAgent:
             **self.stats,
             'uptime': time.time() - self.stats['start_time'],
         }
-
-
-# Mock A2A collector for streaming
-class MockA2ACollector:
-    async def process_combined(self, combined_json):
-        # Simulate streaming by printing as soon as received
-        print("\n--- A2A STREAMED BATCH ---")
-        print(json.dumps(combined_json, indent=2))
-        print("--- END OF BATCH ---\n")
 
 
 def get_available_interfaces() -> List[str]:
@@ -646,15 +590,34 @@ async def run_agent(
         logger.info("No network interface specified (will use PCAP file)")
 
     logger.info("\n" + "=" * 80)
-    logger.info("STEP 4: Creating NFStream Collector Agent")
+    logger.info("STEP 4: Connecting to ClickHouse")
+    logger.info("=" * 80)
+
+    import os
+    clickhouse_store = None
+    try:
+        from agents.storage.clickhouse_store import ClickHouseFlowStore
+        clickhouse_store = ClickHouseFlowStore(
+            host=os.getenv("CLICKHOUSE_HOST", "localhost"),
+            port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+            database=os.getenv("CLICKHOUSE_DATABASE", "nids"),
+            username=os.getenv("CLICKHOUSE_USERNAME", "default"),
+            password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        )
+        logger.info("✓ ClickHouse store connected")
+    except Exception as exc:
+        logger.warning(f"ClickHouse unavailable ({exc}) — flows will use JSONL fallback")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("STEP 5: Creating NFStream Collector Agent")
     logger.info("=" * 80)
 
     # Create agent
-    agent = NFStreamCollectorAgent(config)
+    agent = NFStreamCollectorAgent(config, clickhouse_store=clickhouse_store)
     logger.info("✓ Agent created successfully")
 
     logger.info("\n" + "=" * 80)
-    logger.info("STEP 5: Configuration Summary")
+    logger.info("STEP 6: Configuration Summary")
     logger.info("=" * 80)
     logger.info(f"Source: {config.pcap_file or config.capture_interface or 'Not specified'}")
     logger.info(f"Output: {config.flows_output_file}")
@@ -673,7 +636,6 @@ async def run_agent(
     try:
         # Check for required LLM API keys
         logger.debug("Checking for LLM API keys...")
-        import os
         openai_key = os.getenv("OPENAI_API_KEY")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
@@ -712,16 +674,11 @@ async def run_agent(
             )
             logger.info("✓ LLM Explanation Agent created (OpenAI GPT-4o-mini)")
 
-        logger.debug("Creating Mock A2A Collector...")
-        a2a_collector = MockA2ACollector()
-        logger.info("✓ Mock A2A Collector created")
-
         logger.info("\n" + "=" * 80)
-        logger.info("STEP 7: Starting Flow Collection")
+        logger.info("STEP 8: Starting Flow Collection")
         logger.info("=" * 80)
 
-        # Run agent with A2A collector
-        await agent.run(llm_agent=llm_agent, a2a_collector=a2a_collector)
+        await agent.run(llm_agent=llm_agent)
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
         agent.stop()

@@ -4,258 +4,129 @@ sidebar_position: 1
 
 # Architecture Overview
 
-## System Architecture
-
-The Agentic NIDS implements a multi-agent architecture where specialized agents coordinate through message passing and state management.
+## System Diagram
 
 ```mermaid
 graph TB
-    subgraph "Network Layer"
-        NET[Network Traffic]
+    subgraph Capture["Capture Layer"]
+        NET["Network Interface\nor PCAP File"]
+        COL["NFStreamCollectorAgent\n+ PayloadExtractor plugin"]
+        NET --> COL
     end
 
-    subgraph "Capture Layer"
-        NDPI[nDPI Collector Agent]
-        NET --> NDPI
+    subgraph Workflow["NIDS LangGraph Workflow"]
+        direction LR
+        ANA["analyze_batch\n(ReAct Agent)"]
+        SAV["save_batch"]
+        ANA -->|"analysis ok"| SAV
+        ANA -->|"retry ≤ 3"| ANA
     end
 
-    subgraph "Message Broker"
-        NATS[NATS Server]
-        NDPI -->|Publish flows| NATS
+    COL -->|"batch of N flows"| ANA
+
+    subgraph DSA["Deep Search Sub-Agent"]
+        direction TB
+        REACT["create_react_agent"]
+        T1["search_flows_by_ip"]
+        T2["search_flows_by_port"]
+        T3["search_flows_by_application"]
+        T4["get_top_talkers"]
+        T5["get_flow_statistics"]
+        REACT --> T1 & T2 & T3 & T4 & T5
     end
 
-    subgraph "Processing Layer"
-        CLASSIFIER[XGBoost Classifier<br/>ONNX Runtime]
-        LLM[LLM Explanation<br/>GPT-4 / Claude Opus]
+    ANA <-->|"investigate_flows tool"| REACT
+    T1 & T2 & T3 & T4 & T5 <--> CH
 
-        NATS -->|Subscribe| CLASSIFIER
-        CLASSIFIER -->|ML Results| LLM
-    end
-
-    subgraph "Action Layer"
-        PD[PagerDuty<br/>Alert Agent]
-        INFLUX[InfluxDB<br/>Storage Agent]
-
-        LLM -->|Malicious| PD
-        LLM -->|All Flows| INFLUX
-    end
-
-    subgraph "Presentation Layer"
-        UI[Vue.js Dashboard]
-        INFLUX --> UI
-    end
-
-    style NET fill:#e1f5ff
-    style CLASSIFIER fill:#fff4e6
-    style LLM fill:#f3e5f5
-    style PD fill:#ffebee
-    style INFLUX fill:#e8f5e9
+    SAV --> CH[("ClickHouse\nnids.flows")]
+    SAV -.->|"JSONL fallback"| JSONL["collected_flows.jsonl"]
 ```
 
-## Agent Components
+## Components
 
-### Packet Capture Agent
+### NFStreamCollectorAgent
 
-**Technology**: nfstream + nDPI
+The entry point. Reads packets from a live interface or PCAP file using [nfstream](https://www.nfstream.org/), which embeds [nDPI](https://www.ntop.org/products/deep-packet-inspection/ndpi/) for Layer 7 application identification.
 
-**Responsibilities**:
-- Capture packets from live interface or PCAP file
-- Deep packet inspection (Layer 7 protocol detection)
-- Flow aggregation (configurable 3-minute windows)
-- Feature extraction (16 features)
+- Spawns an `NFStreamer` with the optional `PayloadExtractor` plugin
+- Converts each `NFlow` to a JSON-serialisable dict (30+ features)
+- Accumulates flows into batches and calls `nids_graph.ainvoke(...)` per batch
+- Handles `SIGINT` for graceful shutdown
 
-**Output**: Network flows with statistical features
+### NIDS LangGraph Workflow
 
-### XGBoost Classifier Agent
+A compiled `StateGraph` with two nodes and a conditional retry edge.
 
-**Technology**: ONNX Runtime + A2A Protocol
+| Node | What it does |
+|------|-------------|
+| `analyze_batch` | Builds a `create_react_agent` with the `investigate_flows` tool (if ClickHouse is available). The LLM reads the batch prompt, optionally calls the tool to look up historical patterns, then returns its threat summary. |
+| `save_batch` | Inserts the batch + LLM summary into ClickHouse. Falls back to JSONL if no store is configured. |
 
-**Responsibilities**:
-- ML inference on network flows
-- Binary classification (benign/malicious)
-- Attack type detection
-- Feature importance calculation
-- Risk scoring (0-1 scale)
+The `route_after_analysis` edge retries `analyze_batch` up to `_MAX_RETRIES = 3` times on LLM failure, then proceeds to `save_batch` regardless.
 
-**Performance**: &lt;10ms per flow
+### Deep Search Sub-Agent
 
-###  LLM Explanation Agent
+A second `create_react_agent` wrapped as a single async `investigate_flows` LangChain tool. When the main analysis agent needs historical context — *"has this IP appeared before?"*, *"who are the top talkers?"* — it calls `investigate_flows("natural language query")`. The sub-agent runs its own ReAct loop against ClickHouse and returns a structured summary.
 
-**Technology**: LangChain + OpenAI/Anthropic
+### ClickHouseFlowStore
 
-**Supported Models**:
-- OpenAI: GPT-4, GPT-4o, GPT-4o-mini
-- Anthropic: Claude Opus 4.5, Claude Sonnet 4.5
+Manages the `nids.flows` table:
 
-**Responsibilities**:
-- Generate human-readable explanations
-- Priority classification (Critical/High/Medium/Low)
-- Threat assessment
-- Recommended actions
-- Attack vector analysis
+- Creates the database and table on startup (`_ensure_schema`)
+- `insert_flows(flows, llm_summary)` — batch columnar insert
+- Five read methods used by the search tools (parameterised, SQL-injection safe)
 
-**Performance**: 1-3 seconds per explanation
+### LLMExplanationAgent
 
-###  PagerDuty Alert Agent
+Initialises either `ChatAnthropic` or `ChatOpenAI`. Exposes two chains:
 
-**Technology**: PagerDuty Events API v2
+| Chain | Used by | Returns |
+|-------|---------|---------|
+| `chain` (structured Pydantic) | `explain_classification` | `LLMExplanationResult` |
+| `_batch_chain` (plain text) | `analyze_flows` | `{"anomalies": [], "summary": str}` |
 
-**Responsibilities**:
-- Create incidents for malicious flows
-- Severity mapping (confidence → severity)
-- Deduplication
-- Rich context inclusion
+The raw `llm_agent.llm` handle is passed into the graph configurables so `create_react_agent` can build agents from it directly.
 
-**Trigger**: Conditional (malicious flows only)
-
-### InfluxDB Storage Agent
-
-**Technology**: InfluxDB 2.7+ (Time-Series DB)
-
-**Responsibilities**:
-- Persist network flows
-- Store ML classifications
-- Save LLM explanations
-- Tag-based indexing
-
-**Measurements**:
-- `network_flow`: Raw flow data
-- `flow_classification`: ML results
-- `llm_explanation`: AI explanations
-
-## Data Flow
+## Data Flow Sequence
 
 ```mermaid
 sequenceDiagram
-    participant Net as Network
-    participant Cap as Capture Agent
-    participant NATS as NATS Broker
-    participant ML as Classifier
-    participant LLM as LLM Agent
-    participant PD as PagerDuty
-    participant DB as InfluxDB
+    participant Net as Network/PCAP
+    participant Col as NFStreamCollector
+    participant Graph as NIDS Graph
+    participant LLM as LLM (ReAct)
+    participant DSA as Deep Search Agent
+    participant CH as ClickHouse
 
-    Net->>Cap: Packets
-    Cap->>Cap: Extract features
-    Cap->>NATS: Publish flow
-    NATS->>ML: Deliver flow
-    ML->>ML: ONNX inference
-    ML->>LLM: Classification result
-    LLM->>LLM: Generate explanation
+    Net->>Col: Packets
+    Col->>Col: nDPI inspection + feature extraction
+    Col->>Graph: Batch of N flows + prompt
 
-    alt Malicious flow
-        LLM->>PD: Create incident
+    Graph->>LLM: Analyse batch
+
+    opt Needs historical context
+        LLM->>DSA: investigate_flows("query")
+        DSA->>CH: SQL queries (parameterised)
+        CH-->>DSA: Matching flow rows
+        DSA-->>LLM: Investigation summary
     end
 
-    LLM->>DB: Store flow + classification + explanation
+    LLM-->>Graph: Threat analysis + summary
+    Graph->>CH: INSERT flows + llm_summary
 ```
 
-## State Management
+## File Map
 
-The system uses an immutable state object (NIDSState) that flows through the workflow:
-
-```typescript
-interface NIDSState {
-  // Configuration
-  capture_source: string;
-  collection_interval: number;
-  nats_url: string;
-
-  // Agent outputs
-  flows: FlowData[];
-  classifications: ClassificationResult[];
-  explanations: LLMExplanation[];
-  pagerduty_incidents: PagerDutyIncident[];
-
-  // Metrics
-  flows_captured: number;
-  malicious_count: number;
-  alerts_sent_count: number;
-
-  // Status
-  current_step: WorkflowStep;
-  errors: string[];
-}
 ```
-
-## Communication Protocols
-
-### Agent2Agent (A2A)
-
-- **Transport**: gRPC with streaming
-- **Port**: 50051 (default)
-- **Use Case**: ML classifier requests
-- **Features**: Task status tracking, bidirectional streaming
-
-### NATS Messaging
-
-- **Transport**: TCP
-- **Port**: 4222 (default)
-- **Use Case**: Asynchronous flow distribution
-- **Features**: Pub/sub, JetStream persistence, load balancing
-
-### InfluxDB Line Protocol
-
-- **Transport**: HTTP
-- **Port**: 8086 (default)
-- **Use Case**: Time-series data storage
-- **Features**: Tag-based indexing, retention policies
-
-## Scalability
-
-```mermaid
-graph LR
-    subgraph "Classifier Auto-Scaling"
-        C1[Classifier Pod 1]
-        C2[Classifier Pod 2]
-        C3[Classifier Pod N]
-    end
-
-    LB[Load Balancer<br/>HPA: 2-10 replicas]
-
-    LB --> C1
-    LB --> C2
-    LB --> C3
-
-    style LB fill:#fff4e6
+agent/
+├── nfstream_collector_agent.py      # NFStreamCollectorAgent, CLI
+└── agents/
+    ├── nids_graph.py                # LangGraph workflow (StateGraph)
+    ├── deep_search_agent.py         # make_deep_search_tool()
+    ├── llm/
+    │   └── llm_explanation_agent.py # LLMExplanationAgent
+    ├── storage/
+    │   └── clickhouse_store.py      # ClickHouseFlowStore
+    └── tools/
+        └── flow_search_tools.py     # 5 @tool functions
 ```
-
-**Horizontal Scaling**:
-- Classifier agents: 2-10 replicas (HPA)
-- LLM agents: 2-5 replicas (HPA)
-- UI: 2+ replicas
-
-**Vertical Scaling**:
-- Resource requests/limits configurable
-- Node affinity for high-performance nodes
-
-## Security
-
-```mermaid
-graph TD
-    subgraph "Pod Security"
-        PS1[Non-root user UID 1000]
-        PS2[Read-only filesystem]
-        PS3[Dropped capabilities]
-        PS4[No privilege escalation]
-    end
-
-    subgraph "Network Security"
-        NS1[NetworkPolicy]
-        NS2[ClusterIP internal]
-        NS3[LoadBalancer UI only]
-        NS4[TLS/gRPC encryption]
-    end
-
-    subgraph "Secret Management"
-        SM1[Kubernetes Secrets]
-        SM2[Environment injection]
-        SM3[No hardcoded credentials]
-    end
-```
-
-## Next Steps
-
-- [Data Models](./data-models) - Understand data structures
-- [Workflow](./workflow) - Execution flow details
-- [Deployment](../deployment/kubernetes) - Production setup

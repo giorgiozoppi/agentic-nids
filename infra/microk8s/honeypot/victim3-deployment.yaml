@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeypot-victim3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: honeypot-victim3
+  template:
+    metadata:
+      labels:
+        app: honeypot-victim3
+    spec:
+      containers:
+      - name: victim3
+        image: honeypot-victim3:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 22
+        - containerPort: 80
+        - containerPort: 6379
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        - name: redis-logs
+          mountPath: /var/log/redis-honeypot
+        stdin: true
+        tty: true
+      volumes:
+      - name: shared
+        hostPath:
+          path: /tmp/honeypot-shared
+          type: DirectoryOrCreate
+      - name: redis-logs
+        hostPath:
+          path: /tmp/redis-logs
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeypot-victim3
+spec:
+  type: NodePort
+  selector:
+    app: honeypot-victim3
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 32204
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 38083
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      nodePort: 36380

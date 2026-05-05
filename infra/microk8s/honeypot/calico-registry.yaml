@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calico-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: calico-registry
+  template:
+    metadata:
+      labels:
+        app: calico-registry
+    spec:
+      containers:
+      - name: registry
+        image: registry:2
+        ports:
+        - containerPort: 5000
+        volumeMounts:
+        - name: registry-data
+          mountPath: /var/lib/registry
+      volumes:
+      - name: registry-data
+        hostPath:
+          path: /tmp/calico-registry-data
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calico-registry
+spec:
+  type: NodePort
+  selector:
+    app: calico-registry
+  ports:
+    - name: registry
+      port: 5000
+      targetPort: 5000
+      nodePort: 35000

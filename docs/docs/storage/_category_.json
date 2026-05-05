@@ -1,0 +1,8 @@
+{
+  "label": "Storage",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "description": "Storage backends for network flows and analysis results."
+  }
+}

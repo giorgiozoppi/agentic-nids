@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeypot-grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: honeypot-grafana
+  template:
+    metadata:
+      labels:
+        app: honeypot-grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "true"
+        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+          value: "Admin"
+        volumeMounts:
+        - name: grafana-data
+          mountPath: /var/lib/grafana
+      volumes:
+      - name: grafana-data
+        hostPath:
+          path: /tmp/grafana-data
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeypot-grafana
+spec:
+  type: NodePort
+  selector:
+    app: honeypot-grafana
+  ports:
+    - name: grafana
+      port: 3000
+      targetPort: 3000
+      nodePort: 33000

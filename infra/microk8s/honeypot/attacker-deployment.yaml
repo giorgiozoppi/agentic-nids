@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honeypot-attacker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: honeypot-attacker
+  template:
+    metadata:
+      labels:
+        app: honeypot-attacker
+    spec:
+      containers:
+      - name: attacker
+        image: honeypot-attacker:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 22
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW"]
+        stdin: true
+        tty: true
+      volumes:
+      - name: shared
+        hostPath:
+          path: /tmp/honeypot-shared
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeypot-attacker
+spec:
+  type: NodePort
+  selector:
+    app: honeypot-attacker
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 32201

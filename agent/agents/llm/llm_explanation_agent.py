@@ -1,221 +1,105 @@
 """
 LLM Explanation Agent for Agentic NIDS
 
-Generates human-readable threat explanations using Large Language Models (GPT-4/GPT-3.5-turbo).
+Generates human-readable threat explanations using Large Language Models.
 Provides priority classification, threat assessment, and recommended actions.
+The LLM backend is injected via an LLMStrategy, making it trivial to swap
+between OpenAI, Anthropic, Gemini, or a local vLLM server.
 """
 
 import asyncio
 import logging
-import os
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-from enum import Enum
+import time
+from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 
+from agents.llm.strategies import LLMStrategy, VLLMStrategy
+from models import LLMExplanationResult, Priority, ThreatExplanation
+
 logger = logging.getLogger(__name__)
 
+_EXPLAIN_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "You are a cybersecurity expert analyzing network intrusion detection results. "
+        "Your task is to explain ML classification results in clear, actionable language "
+        "for security analysts. Focus on practical threat assessment and specific "
+        "recommended actions.\n\n{format_instructions}"
+    )),
+    ("user", (
+        "Analyze this network flow classification:\n\n"
+        "FLOW INFORMATION:\n"
+        "- Flow ID: {flow_id}\n"
+        "- Source: {src_ip}:{src_port} → Destination: {dst_ip}:{dst_port}\n"
+        "- Protocol: {protocol}\n"
+        "- Application: {application_name}\n"
+        "- Duration: {duration_ms} ms\n"
+        "- Packets: {bidirectional_packets} (Forward: {forward_packets}, Reverse: {reverse_packets})\n"
+        "- Bytes: {bidirectional_bytes} (Forward: {forward_bytes}, Reverse: {reverse_bytes})\n"
+        "- Packet Rate: {packets_per_second:.2f} pps\n"
+        "- Byte Rate: {bytes_per_second:.2f} Bps\n\n"
+        "CLASSIFICATION RESULT:\n"
+        "- Prediction: {prediction_label}\n"
+        "- Confidence: {confidence:.1%}\n"
+        "- Attack Type: {attack_type}\n"
+        "- Risk Score: {risk_score:.2f}\n"
+        "- Is Anomaly: {is_anomaly}\n\n"
+        "FEATURE IMPORTANCE (Top Contributors):\n"
+        "{feature_importance}\n\n"
+        "Provide:\n"
+        "1. Clear explanation of why this traffic was classified as {prediction_label}\n"
+        "2. Threat assessment including risk level justification\n"
+        "3. Specific recommended actions for the security team\n"
+        "4. Key technical factors that influenced this classification\n"
+        "5. Analysis of the attack vector (if malicious)"
+    )),
+])
 
-class Priority(str, Enum):
-    """Threat priority levels based on ML confidence"""
-    CRITICAL = "Critical"  # >= 90%
-    HIGH = "High"          # 70-90%
-    MEDIUM = "Medium"      # 50-70%
-    LOW = "Low"            # < 50%
-
-
-class ThreatExplanation(BaseModel):
-    """Structured threat explanation from LLM"""
-    explanation: str = Field(description="Detailed explanation of the classification")
-    threat_assessment: str = Field(description="Overall threat assessment and risk level")
-    recommended_actions: List[str] = Field(description="List of recommended security actions")
-    key_reasoning_factors: List[str] = Field(description="Key factors that led to this classification")
-    attack_vector_analysis: Optional[str] = Field(
-        default=None,
-        description="Analysis of the attack vector and methodology"
-    )
-
-
-@dataclass
-class LLMExplanationResult:
-    """Result from LLM explanation generation"""
-    flow_id: int
-    priority: Priority
-    explanation: str
-    threat_assessment: str
-    recommended_actions: List[str]
-    key_reasoning_factors: List[str]
-    attack_vector_analysis: Optional[str]
-    generation_time_ms: float
+_BATCH_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", "You are a network security expert. Analyze the provided network flows for threats and anomalies."),
+    ("human", "{prompt}"),
+])
 
 
 class LLMExplanationAgent:
-    """
-    Agent for generating human-readable threat explanations using LLMs
-    """
+    """Generates human-readable threat explanations using a pluggable LLM strategy."""
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.3,
-        max_tokens: int = 1000,
-        timeout: float = 30.0,
-        provider: str = "openai"
-    ):
-        """
-        Initialize LLM Explanation Agent
-
-        Args:
-            api_key: API key (OpenAI or Anthropic, or use OPENAI_API_KEY/ANTHROPIC_API_KEY env var)
-            model: Model name
-                   - OpenAI: gpt-4, gpt-4o, gpt-4o-mini, gpt-3.5-turbo
-                   - Anthropic: claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4
-            temperature: Sampling temperature (0.0-1.0)
-            max_tokens: Maximum tokens in response
-            timeout: Request timeout in seconds
-            provider: LLM provider ("openai" or "anthropic")
-        """
-        self.provider = provider.lower()
-        self.model_name = model
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.timeout = timeout
-
-        # Initialize LLM based on provider
-        if self.provider == "anthropic":
-            self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not self.api_key:
-                raise ValueError("Anthropic API key required (set ANTHROPIC_API_KEY env var)")
-
-            self.llm = ChatAnthropic(
-                model=self.model_name,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                timeout=self.timeout,
-                api_key=self.api_key
-            )
-            logger.info(f"LLM Explanation Agent initialized with Anthropic {self.model_name}")
-
-        else:  # Default to OpenAI
-            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-            if not self.api_key:
-                raise ValueError("OpenAI API key required (set OPENAI_API_KEY env var)")
-
-            self.llm = ChatOpenAI(
-                model=self.model_name,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                request_timeout=self.timeout,
-                api_key=self.api_key
-            )
-            logger.info(f"LLM Explanation Agent initialized with OpenAI {self.model_name}")
-
-        # Setup output parser
+    def __init__(self, strategy: LLMStrategy = None) -> None:
+        if strategy is None:
+            strategy = VLLMStrategy()
+        self.llm = strategy.build()
         self.parser = PydanticOutputParser(pydantic_object=ThreatExplanation)
-
-        # Create prompt template
-        self.prompt_template = ChatPromptTemplate.from_messages([
-            ("system", """You are a cybersecurity expert analyzing network intrusion detection results.
-Your task is to explain ML classification results in clear, actionable language for security analysts.
-Focus on practical threat assessment and specific recommended actions.
-
-{format_instructions}"""),
-            ("user", """Analyze this network flow classification:
-
-FLOW INFORMATION:
-- Flow ID: {flow_id}
-- Source: {src_ip}:{src_port} → Destination: {dst_ip}:{dst_port}
-- Protocol: {protocol}
-- Application: {application_name}
-- Duration: {duration_ms} ms
-- Packets: {bidirectional_packets} (Forward: {forward_packets}, Reverse: {reverse_packets})
-- Bytes: {bidirectional_bytes} (Forward: {forward_bytes}, Reverse: {reverse_bytes})
-- Packet Rate: {packets_per_second:.2f} pps
-- Byte Rate: {bytes_per_second:.2f} Bps
-
-CLASSIFICATION RESULT:
-- Prediction: {prediction_label}
-- Confidence: {confidence:.1%}
-- Attack Type: {attack_type}
-- Risk Score: {risk_score:.2f}
-- Is Anomaly: {is_anomaly}
-
-FEATURE IMPORTANCE (Top Contributors):
-{feature_importance}
-
-Provide:
-1. Clear explanation of why this traffic was classified as {prediction_label}
-2. Threat assessment including risk level justification
-3. Specific recommended actions for the security team
-4. Key technical factors that influenced this classification
-5. Analysis of the attack vector (if malicious)""")
-        ])
-
-        self.chain = self.prompt_template | self.llm | self.parser
-
-        logger.info(f"LLM Explanation Agent initialized (model: {model})")
+        self._chain = _EXPLAIN_PROMPT | self.llm | self.parser
+        self._batch_chain = _BATCH_PROMPT | self.llm
+        logger.info("LLMExplanationAgent ready (%s)", strategy.label)
 
     @staticmethod
     def classify_priority(confidence: float) -> Priority:
-        """
-        Classify priority based on ML confidence
-
-        Args:
-            confidence: Classification confidence (0.0-1.0)
-
-        Returns:
-            Priority level
-        """
         if confidence >= 0.90:
             return Priority.CRITICAL
-        elif confidence >= 0.70:
+        if confidence >= 0.70:
             return Priority.HIGH
-        elif confidence >= 0.50:
+        if confidence >= 0.50:
             return Priority.MEDIUM
-        else:
-            return Priority.LOW
+        return Priority.LOW
 
     async def explain_classification(
         self,
         flow_data: Dict[str, Any],
-        classification_result: Dict[str, Any]
+        classification_result: Dict[str, Any],
     ) -> LLMExplanationResult:
-        """
-        Generate explanation for a classification result
-
-        Args:
-            flow_data: Network flow data dictionary
-            classification_result: ML classification result
-
-        Returns:
-            LLMExplanationResult with generated explanation
-        """
-        import time
-        start_time = time.time()
-
+        start = time.monotonic()
         try:
-            # Classify priority
             confidence = classification_result.get("confidence", 0.0)
             priority = self.classify_priority(confidence)
 
-            # Format feature importance
             feature_importance = classification_result.get("feature_importance", {})
-            feature_importance_str = "\n".join(
-                f"  - {feature}: {importance:.3f}"
-                for feature, importance in sorted(
-                    feature_importance.items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )[:5]  # Top 5 features
-            )
+            fi_str = "\n".join(
+                f"  - {feat}: {imp:.3f}"
+                for feat, imp in sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
+            ) or "  (No feature importance data)"
 
-            # Prepare prompt variables
             prompt_vars = {
                 "flow_id": flow_data.get("flow_id", "unknown"),
                 "src_ip": flow_data.get("src_ip", "unknown"),
@@ -238,17 +122,12 @@ Provide:
                 "attack_type": classification_result.get("attack_type", "unknown"),
                 "risk_score": classification_result.get("risk_score", 0.0),
                 "is_anomaly": classification_result.get("is_anomaly", False),
-                "feature_importance": feature_importance_str or "  (No feature importance data)",
-                "format_instructions": self.parser.get_format_instructions()
+                "feature_importance": fi_str,
+                "format_instructions": self.parser.get_format_instructions(),
             }
 
-            # Generate explanation
-            explanation = await asyncio.to_thread(
-                self.chain.invoke,
-                prompt_vars
-            )
-
-            generation_time_ms = (time.time() - start_time) * 1000
+            explanation: ThreatExplanation = await asyncio.to_thread(self._chain.invoke, prompt_vars)
+            elapsed_ms = (time.monotonic() - start) * 1000
 
             result = LLMExplanationResult(
                 flow_id=flow_data.get("flow_id", 0),
@@ -258,171 +137,100 @@ Provide:
                 recommended_actions=explanation.recommended_actions,
                 key_reasoning_factors=explanation.key_reasoning_factors,
                 attack_vector_analysis=explanation.attack_vector_analysis,
-                generation_time_ms=generation_time_ms
+                generation_time_ms=elapsed_ms,
             )
-
-            logger.info(
-                f"Generated explanation for flow {result.flow_id} "
-                f"(priority: {priority.value}, {generation_time_ms:.0f}ms)"
-            )
-
+            logger.info("Explained flow %s (priority=%s, %.0fms)", result.flow_id, priority.value, elapsed_ms)
             return result
 
-        except Exception as e:
-            logger.error(f"Failed to generate explanation: {e}")
-            # Return fallback explanation
-            generation_time_ms = (time.time() - start_time) * 1000
-            return self._create_fallback_explanation(
-                flow_data,
-                classification_result,
-                generation_time_ms,
-                error=str(e)
-            )
+        except Exception as exc:
+            logger.error("Failed to generate explanation: %s", exc)
+            return self._fallback(flow_data, classification_result, (time.monotonic() - start) * 1000, str(exc))
 
-    def _create_fallback_explanation(
+    def _fallback(
         self,
         flow_data: Dict[str, Any],
         classification_result: Dict[str, Any],
-        generation_time_ms: float,
-        error: str
+        elapsed_ms: float,
+        error: str,
     ) -> LLMExplanationResult:
-        """Create fallback explanation when LLM fails"""
         confidence = classification_result.get("confidence", 0.0)
         priority = self.classify_priority(confidence)
         prediction = classification_result.get("prediction_label", "unknown")
         attack_type = classification_result.get("attack_type", "unknown")
-
         return LLMExplanationResult(
             flow_id=flow_data.get("flow_id", 0),
             priority=priority,
             explanation=(
                 f"Flow classified as {prediction} with {confidence:.1%} confidence. "
-                f"Attack type: {attack_type}. "
-                f"(LLM explanation unavailable: {error})"
+                f"Attack type: {attack_type}. (LLM explanation unavailable: {error})"
             ),
             threat_assessment=f"{priority.value} priority threat detected",
             recommended_actions=[
                 "Review flow details manually",
                 "Investigate source and destination IPs",
                 "Check for similar patterns",
-                "Alert security team if confidence is high"
+                "Alert security team if confidence is high",
             ],
             key_reasoning_factors=[
                 f"ML confidence: {confidence:.1%}",
-                f"Attack type: {attack_type}"
+                f"Attack type: {attack_type}",
             ],
-            attack_vector_analysis=None,
-            generation_time_ms=generation_time_ms
+            generation_time_ms=elapsed_ms,
         )
 
     async def explain_batch(
         self,
-        flows_and_classifications: List[tuple[Dict[str, Any], Dict[str, Any]]]
+        flows_and_classifications: List[tuple[Dict[str, Any], Dict[str, Any]]],
     ) -> List[LLMExplanationResult]:
-        """
-        Generate explanations for a batch of classifications
-
-        Args:
-            flows_and_classifications: List of (flow_data, classification_result) tuples
-
-        Returns:
-            List of LLMExplanationResult
-        """
-        tasks = [
-            self.explain_classification(flow_data, classification_result)
-            for flow_data, classification_result in flows_and_classifications
-        ]
-
+        tasks = [self.explain_classification(fd, cr) for fd, cr in flows_and_classifications]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Handle any exceptions
-        explanations = []
+        explanations: List[LLMExplanationResult] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                flow_data, classification_result = flows_and_classifications[i]
-                logger.error(f"Batch explanation failed for flow {flow_data.get('flow_id')}: {result}")
-                # Create fallback
-                fallback = self._create_fallback_explanation(
-                    flow_data,
-                    classification_result,
-                    0.0,
-                    str(result)
-                )
-                explanations.append(fallback)
+                fd, cr = flows_and_classifications[i]
+                logger.error("Batch explanation failed for flow %s: %s", fd.get("flow_id"), result)
+                explanations.append(self._fallback(fd, cr, 0.0, str(result)))
             else:
                 explanations.append(result)
-
         return explanations
 
-    async def analyze_flows(self, flows, prompt):
-        """
-        Analyze a batch of flows using the configured LLM (OpenAI or Anthropic).
-        Returns a dict with 'anomalies' and 'summary'.
-        """
-        # Use the LLM chain to get a response (LangChain or direct API)
+    async def analyze_flows(self, flows: List[Dict[str, Any]], prompt: str) -> Dict[str, Any]:
+        """Analyze a batch of flows with a free-form prompt. Returns anomalies and summary."""
         try:
-            # If using LangChain, call the chain with the prompt
-            if hasattr(self, 'chain'):
-                # LangChain expects input as a dict
-                result = await self.chain.ainvoke({"input": prompt})
-                # Try to parse result as dict
-                if isinstance(result, dict):
-                    return result
-                # If result is a string, try to parse as JSON
-                import json
-                try:
-                    return json.loads(result)
-                except Exception:
-                    return {"anomalies": [], "summary": str(result)}
-            # Fallback: just echo the prompt
-            return {"anomalies": [], "summary": "LLM did not return a structured result."}
-        except Exception as e:
-            return {"anomalies": [], "summary": f"LLM error: {e}"}
+            result = await self._batch_chain.ainvoke({"prompt": prompt})
+            content = result.content if hasattr(result, "content") else str(result)
+            return {"anomalies": [], "summary": content}
+        except Exception as exc:
+            logger.error("analyze_flows error: %s", exc)
+            return {"anomalies": [], "summary": f"LLM error: {exc}"}
 
 
-async def main():
-    """Example usage"""
+async def main() -> None:
+    """Example usage — swap the strategy to change the LLM backend."""
     logging.basicConfig(level=logging.INFO)
 
-    # Example flow and classification
+    from agents.llm.strategies import create_strategy
+
     flow_data = {
-        "flow_id": 12345,
-        "src_ip": "192.168.1.100",
-        "src_port": 54321,
-        "dst_ip": "203.0.113.45",
-        "dst_port": 443,
-        "protocol": "TCP",
-        "application_name": "HTTPS",
-        "duration_ms": 45000,
-        "bidirectional_packets": 1523,
-        "bidirectional_bytes": 2048576,
-        "forward_packets": 876,
-        "reverse_packets": 647,
-        "forward_bytes": 1182976,
-        "reverse_bytes": 865600,
-        "packets_per_second": 33.8,
-        "bytes_per_second": 45523.9
+        "flow_id": 12345, "src_ip": "192.168.1.100", "src_port": 54321,
+        "dst_ip": "203.0.113.45", "dst_port": 443, "protocol": "TCP",
+        "application_name": "HTTPS", "duration_ms": 45000,
+        "bidirectional_packets": 1523, "bidirectional_bytes": 2048576,
+        "forward_packets": 876, "reverse_packets": 647,
+        "forward_bytes": 1182976, "reverse_bytes": 865600,
+        "packets_per_second": 33.8, "bytes_per_second": 45523.9,
     }
-
     classification_result = {
-        "prediction_label": "malicious",
-        "confidence": 0.87,
-        "attack_type": "port_scan",
-        "risk_score": 0.75,
-        "is_anomaly": True,
+        "prediction_label": "malicious", "confidence": 0.87,
+        "attack_type": "port_scan", "risk_score": 0.75, "is_anomaly": True,
         "feature_importance": {
-            "packets_forward": 0.25,
-            "bytes_forward": 0.31,
-            "packets_per_second": 0.18,
-            "duration": 0.12,
-            "port_number": 0.14
-        }
+            "packets_forward": 0.25, "bytes_forward": 0.31,
+            "packets_per_second": 0.18, "duration": 0.12, "port_number": 0.14,
+        },
     }
 
-    # Initialize agent
-    agent = LLMExplanationAgent(model="gpt-4o-mini")
-
-    # Generate explanation
+    agent = LLMExplanationAgent(strategy=create_strategy("openai", model="gpt-4o-mini"))
     result = await agent.explain_classification(flow_data, classification_result)
 
     print(f"\n{'='*70}")
@@ -431,10 +239,10 @@ async def main():
     print(f"Priority: {result.priority.value}")
     print(f"\nExplanation:\n{result.explanation}")
     print(f"\nThreat Assessment:\n{result.threat_assessment}")
-    print(f"\nRecommended Actions:")
+    print("\nRecommended Actions:")
     for action in result.recommended_actions:
         print(f"  - {action}")
-    print(f"\nKey Reasoning Factors:")
+    print("\nKey Reasoning Factors:")
     for factor in result.key_reasoning_factors:
         print(f"  - {factor}")
     if result.attack_vector_analysis:

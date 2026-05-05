@@ -24,11 +24,14 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # CLI
     "typer>=0.9.0",
-    # LangChain LLM integration
+    # LangChain / LangGraph LLM integration
     "langchain>=1.2.0",
     "langchain-core>=0.3.0",
     "langchain-openai>=1.1.6",
     "langchain-anthropic>=1.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langgraph>=0.2.0",
+    "clickhouse-connect>=0.7.0",
 ]
 
 [project.optional-dependencies]
