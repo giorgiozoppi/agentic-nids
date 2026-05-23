@@ -4,258 +4,120 @@ sidebar_position: 1
 
 # Architecture Overview
 
-## System Architecture
-
-The Agentic NIDS implements a multi-agent architecture where specialized agents coordinate through message passing and state management.
+## System diagram
 
 ```mermaid
 graph TB
-    subgraph "Network Layer"
-        NET[Network Traffic]
+    subgraph "Capture layer"
+        NET[Network traffic]
+        COL[NFStream collector<br/>Python daemon]
+        NET --> COL
     end
 
-    subgraph "Capture Layer"
-        NDPI[nDPI Collector Agent]
-        NET --> NDPI
+    subgraph "Transport layer"
+        NATS[NATS broker<br/>subject: flows.raw<br/>format: MsgPack]
+        COL -->|MsgPack publish| NATS
     end
 
-    subgraph "Message Broker"
-        NATS[NATS Server]
-        NDPI -->|Publish flows| NATS
+    subgraph "Storage layer"
+        NATS_TBL[nids.flows_nats<br/>NATS engine table]
+        MV[Materialized view]
+        FLOWS[nids.flows<br/>MergeTree — 90-day TTL]
+        NATS -->|native subscribe| NATS_TBL
+        NATS_TBL --> MV --> FLOWS
     end
 
-    subgraph "Processing Layer"
-        CLASSIFIER[XGBoost Classifier<br/>ONNX Runtime]
-        LLM[LLM Explanation<br/>GPT-4 / Claude Opus]
-
-        NATS -->|Subscribe| CLASSIFIER
-        CLASSIFIER -->|ML Results| LLM
+    subgraph "Classification layer"
+        ORCH[Orchestrator<br/>Go CronJob]
+        CLF[Classifier<br/>Go gRPC service]
+        SE[nids.security_events<br/>MergeTree]
+        FLOWS -->|FetchFlows| ORCH
+        ORCH -->|ClassifyBatch gRPC| CLF
+        CLF -->|probabilities| ORCH
+        ORCH -->|non-BENIGN events| SE
     end
 
-    subgraph "Action Layer"
-        PD[PagerDuty<br/>Alert Agent]
-        INFLUX[InfluxDB<br/>Storage Agent]
-
-        LLM -->|Malicious| PD
-        LLM -->|All Flows| INFLUX
-    end
-
-    subgraph "Presentation Layer"
-        UI[Vue.js Dashboard]
-        INFLUX --> UI
-    end
-
-    style NET fill:#e1f5ff
-    style CLASSIFIER fill:#fff4e6
-    style LLM fill:#f3e5f5
-    style PD fill:#ffebee
-    style INFLUX fill:#e8f5e9
+    style COL fill:#e1f5ff
+    style NATS fill:#fff9c4
+    style FLOWS fill:#e8f5e9
+    style CLF fill:#fff4e6
+    style SE fill:#ffebee
 ```
 
-## Agent Components
+## NFStream collector
 
-### Packet Capture Agent
+**Technology**: nfstream + nDPI  
+**Runs as**: Unix daemon (double-fork, PID file, rotating log)
 
-**Technology**: nfstream + nDPI
+- Captures from a live interface **or** replays a PCAP file.
+- nDPI provides Layer-7 protocol detection and statistical features.
+- Each completed flow is serialised with **MsgPack** and published to NATS subject `flows.raw`.
+- Configurable via `config/config.yaml`; all fields are overridable with CLI flags.
 
-**Responsibilities**:
-- Capture packets from live interface or PCAP file
-- Deep packet inspection (Layer 7 protocol detection)
-- Flow aggregation (configurable 3-minute windows)
-- Feature extraction (16 features)
+Key features extracted per flow: 22 numeric values including packet/byte counts, inter-arrival times, TCP flag counts, and derived rates.
 
-**Output**: Network flows with statistical features
+## NATS
 
-### XGBoost Classifier Agent
+ClickHouse subscribes to NATS **natively** via its NATS table engine. There is no separate Python consumer. The schema defines:
 
-**Technology**: ONNX Runtime + A2A Protocol
-
-**Responsibilities**:
-- ML inference on network flows
-- Binary classification (benign/malicious)
-- Attack type detection
-- Feature importance calculation
-- Risk scoring (0-1 scale)
-
-**Performance**: &lt;10ms per flow
-
-###  LLM Explanation Agent
-
-**Technology**: LangChain + OpenAI/Anthropic
-
-**Supported Models**:
-- OpenAI: GPT-4, GPT-4o, GPT-4o-mini
-- Anthropic: Claude Opus 4.5, Claude Sonnet 4.5
-
-**Responsibilities**:
-- Generate human-readable explanations
-- Priority classification (Critical/High/Medium/Low)
-- Threat assessment
-- Recommended actions
-- Attack vector analysis
-
-**Performance**: 1-3 seconds per explanation
-
-###  PagerDuty Alert Agent
-
-**Technology**: PagerDuty Events API v2
-
-**Responsibilities**:
-- Create incidents for malicious flows
-- Severity mapping (confidence → severity)
-- Deduplication
-- Rich context inclusion
-
-**Trigger**: Conditional (malicious flows only)
-
-### InfluxDB Storage Agent
-
-**Technology**: InfluxDB 2.7+ (Time-Series DB)
-
-**Responsibilities**:
-- Persist network flows
-- Store ML classifications
-- Save LLM explanations
-- Tag-based indexing
-
-**Measurements**:
-- `network_flow`: Raw flow data
-- `flow_classification`: ML results
-- `llm_explanation`: AI explanations
-
-## Data Flow
-
-```mermaid
-sequenceDiagram
-    participant Net as Network
-    participant Cap as Capture Agent
-    participant NATS as NATS Broker
-    participant ML as Classifier
-    participant LLM as LLM Agent
-    participant PD as PagerDuty
-    participant DB as InfluxDB
-
-    Net->>Cap: Packets
-    Cap->>Cap: Extract features
-    Cap->>NATS: Publish flow
-    NATS->>ML: Deliver flow
-    ML->>ML: ONNX inference
-    ML->>LLM: Classification result
-    LLM->>LLM: Generate explanation
-
-    alt Malicious flow
-        LLM->>PD: Create incident
-    end
-
-    LLM->>DB: Store flow + classification + explanation
+```
+nids.flows_nats  (ENGINE = NATS, nats_format = 'MsgPack')
+       │
+       └──[Materialized view]──► nids.flows  (MergeTree, 90-day TTL)
 ```
 
-## State Management
+## Classifier gRPC service {#classifier}
 
-The system uses an immutable state object (NIDSState) that flows through the workflow:
+**Technology**: Go 1.22 + ONNX Runtime (`github.com/microsoft/onnxruntime-go`)
 
-```typescript
-interface NIDSState {
-  // Configuration
-  capture_source: string;
-  collection_interval: number;
-  nats_url: string;
+- Loads a pre-trained ONNX model at startup from `/models/classifier.onnx`.
+- Exposes a single RPC: `ClassifyBatch([]FlowFeatures) → []ClassifyResponse`.
+- Pre-allocates tensors for up to 256 flows per call; reshapes per actual batch size.
+- Returns for each flow:
+  - `label` — the predicted attack class (e.g. `"DoS"`, `"BENIGN"`)
+  - `confidence` — probability of the predicted class
+  - `probabilities` — full 8-class probability vector
 
-  // Agent outputs
-  flows: FlowData[];
-  classifications: ClassificationResult[];
-  explanations: LLMExplanation[];
-  pagerduty_incidents: PagerDutyIncident[];
+### Attack classes
 
-  // Metrics
-  flows_captured: number;
-  malicious_count: number;
-  alerts_sent_count: number;
+| Index | Label | Description |
+|-------|-------|-------------|
+| 0 | `BENIGN` | Normal traffic |
+| 1 | `DoS` | Denial-of-Service |
+| 2 | `DDoS` | Distributed DoS |
+| 3 | `PortScan` | Port scanning |
+| 4 | `BruteForce` | Credential guessing |
+| 5 | `WebAttack` | SQL injection / XSS |
+| 6 | `Botnet` | Bot-to-C2 traffic |
+| 7 | `Malware` | Generic malware |
 
-  // Status
-  current_step: WorkflowStep;
-  errors: string[];
-}
-```
+## Orchestrator (CronJob)
 
-## Communication Protocols
+**Technology**: Go 1.22 + `github.com/ClickHouse/clickhouse-go/v2`  
+**Schedule**: every 5 minutes (`*/5 * * * *`), `concurrencyPolicy: Forbid`
 
-### Agent2Agent (A2A)
+1. Loads a persisted RFC3339Nano timestamp from a PVC-backed `/state` directory (defaults to `now − 24 h` on first run).
+2. Paginates `nids.flows WHERE collected_at > cursor ORDER BY collected_at ASC LIMIT 256`.
+3. Sends each page to `ClassifyBatch`.
+4. **Immediately after the gRPC response arrives**, inserts all non-BENIGN results into `nids.security_events` and logs each stored event (`attack`, `confidence`).
+5. Advances the cursor to `max(collected_at)` of the page and saves state.
 
-- **Transport**: gRPC with streaming
-- **Port**: 50051 (default)
-- **Use Case**: ML classifier requests
-- **Features**: Task status tracking, bidirectional streaming
+## Vault secret injection
 
-### NATS Messaging
+All workloads (NATS, ClickHouse, collector, orchestrator, classifier) receive credentials via the **Vault Agent Injector**:
 
-- **Transport**: TCP
-- **Port**: 4222 (default)
-- **Use Case**: Asynchronous flow distribution
-- **Features**: Pub/sub, JetStream persistence, load balancing
+- Secrets live at `kv/data/nids/{clickhouse,nats,collector}` (KV-v2).
+- Injected as files under `/vault/secrets/*.env` on each pod.
+- TLS is self-managed via `AGENT_INJECT_TLS_AUTO`.
 
-### InfluxDB Line Protocol
+## Security model
 
-- **Transport**: HTTP
-- **Port**: 8086 (default)
-- **Use Case**: Time-series data storage
-- **Features**: Tag-based indexing, retention policies
+- Collector pod runs with `NET_ADMIN` / `NET_RAW` capabilities and `hostNetwork: true` (required for packet capture).
+- All other pods run unprivileged.
+- No hardcoded credentials anywhere in manifests — all via Vault.
 
-## Scalability
+## Next steps
 
-```mermaid
-graph LR
-    subgraph "Classifier Auto-Scaling"
-        C1[Classifier Pod 1]
-        C2[Classifier Pod 2]
-        C3[Classifier Pod N]
-    end
-
-    LB[Load Balancer<br/>HPA: 2-10 replicas]
-
-    LB --> C1
-    LB --> C2
-    LB --> C3
-
-    style LB fill:#fff4e6
-```
-
-**Horizontal Scaling**:
-- Classifier agents: 2-10 replicas (HPA)
-- LLM agents: 2-5 replicas (HPA)
-- UI: 2+ replicas
-
-**Vertical Scaling**:
-- Resource requests/limits configurable
-- Node affinity for high-performance nodes
-
-## Security
-
-```mermaid
-graph TD
-    subgraph "Pod Security"
-        PS1[Non-root user UID 1000]
-        PS2[Read-only filesystem]
-        PS3[Dropped capabilities]
-        PS4[No privilege escalation]
-    end
-
-    subgraph "Network Security"
-        NS1[NetworkPolicy]
-        NS2[ClusterIP internal]
-        NS3[LoadBalancer UI only]
-        NS4[TLS/gRPC encryption]
-    end
-
-    subgraph "Secret Management"
-        SM1[Kubernetes Secrets]
-        SM2[Environment injection]
-        SM3[No hardcoded credentials]
-    end
-```
-
-## Next Steps
-
-- [Data Models](./data-models) - Understand data structures
-- [Workflow](./workflow) - Execution flow details
-- [Deployment](../deployment/kubernetes) - Production setup
+- [Workflow](./workflow) — step-by-step data flow
+- [Data Models](./data-models) — ClickHouse schema details
+- [Kubernetes Deployment](../deployment/kubernetes) — production setup

@@ -4,133 +4,93 @@ sidebar_position: 2
 
 # Docker Deployment
 
-Deploy Agentic NIDS using Docker and Docker Compose.
+The `agent/docker-compose.yml` starts NATS and ClickHouse for local
+development and testing.
 
-## Docker Compose (Recommended)
-
-### 1. Create `docker-compose.yml`
+## `docker-compose.yml`
 
 ```yaml
-version: '3.8'
-
 services:
   nats:
-    image: nats:2.10
-    container_name: nids-nats
+    image: nats:2-alpine
     ports:
-      - "${NATS_PORT:-4222}:4222"
-      - "8222:8222"
-    environment:
-      - NATS_URL=nats://nats:4222
+      - "4222:4222"
+      - "8222:8222"   # monitoring UI
 
-  influxdb:
-    image: influxdb:2.7
-    container_name: nids-influxdb
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
     ports:
-      - "${INFLUXDB_PORT:-8086}:8086"
-    environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-password123}
-      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-nids}
-      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-network_security}
-      - DOCKER_INFLUXDB_INIT_RETENTION=${INFLUXDB_RETENTION:-7d}
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # native protocol
     volumes:
-      - influxdb-data:/var/lib/influxdb2
-
-  classifier:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.classifier
-    container_name: nids-classifier
-    ports:
-      - "${CLASSIFIER_PORT:-50051}:50051"
-    environment:
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-    depends_on:
-      - nats
-
-  nids:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.all-in-one
-    container_name: nids-app
-    environment:
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY}
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-      - INFLUXDB_URL=${INFLUXDB_URL:-http://influxdb:8086}
-      - INFLUXDB_ORG=${INFLUXDB_ORG:-nids}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-network_security}
-    depends_on:
-      - nats
-      - influxdb
-      - classifier
+      - clickhouse_data:/var/lib/clickhouse
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    depends_on: [nats]
 
 volumes:
-  influxdb-data:
+  clickhouse_data:
 ```
 
-### 2. Create `.env` File
+ClickHouse runs `schema.sql` on first start and creates:
+
+| Object | Type | Purpose |
+|--------|------|---------|
+| `nids.flows_nats` | NATS engine table | Live NATS subscription |
+| `nids.flows_mv` | Materialized view | Routes rows to MergeTree |
+| `nids.flows` | MergeTree | Persistent flow storage |
+| `nids.security_events` | MergeTree | Threat detections |
+
+## Common commands
 
 ```bash
-# LLM Provider
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-opus-4-5
+# Start (idempotent)
+cd agent
+docker compose up -d
 
-# API Keys
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-PAGERDUTY_ROUTING_KEY=R0...
+# Tail ClickHouse logs
+docker compose logs -f clickhouse
 
-# Service URLs (optional, use defaults)
-NATS_URL=nats://nats:4222
-INFLUXDB_URL=http://influxdb:8086
+# Query flows
+docker compose exec clickhouse \
+  clickhouse-client --query "SELECT count() FROM nids.flows"
 
-# InfluxDB Config
-INFLUXDB_ORG=nids
-INFLUXDB_BUCKET=network_security
-INFLUXDB_PASSWORD=secure-password-here
-INFLUXDB_RETENTION=30d
+# Query security events
+docker compose exec clickhouse \
+  clickhouse-client --query \
+  "SELECT label, confidence, src_ip, dst_ip FROM nids.security_events ORDER BY detected_at DESC LIMIT 20"
 
-# Ports (optional)
-NATS_PORT=4222
-INFLUXDB_PORT=8086
-CLASSIFIER_PORT=50051
+# Stop and remove volumes
+docker compose down -v
 ```
 
-### 3. Start Services
+## E2E test
 
 ```bash
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
+cd agent
+bash start_test.sh
 ```
 
-## Environment Variables
+The script is fully idempotent: it kills any stale containers, starts fresh
+infrastructure, injects attack PCAPs, validates row counts, and tears
+everything down via an `EXIT` trap.
 
-All configuration uses environment variables:
+## Building the classifier image
 
-| Variable | Default | Required | Description |
-|----------|---------|----------|-------------|
-| `LLM_PROVIDER` | `openai` | No | LLM provider |
-| `LLM_MODEL` | `gpt-4o-mini` | No | Model name |
-| `OPENAI_API_KEY` | - | If provider=openai | OpenAI key |
-| `ANTHROPIC_API_KEY` | - | If provider=anthropic | Anthropic key |
-| `NATS_URL` | `nats://localhost:4222` | No | NATS server |
-| `INFLUXDB_URL` | `http://localhost:8086` | No | InfluxDB server |
-| `INFLUXDB_ORG` | `nids` | No | Organization |
-| `INFLUXDB_BUCKET` | `network_security` | No | Bucket name |
+```bash
+cd services
+docker build -f classifier/Dockerfile -t nids-classifier:latest .
+```
 
-## Next Steps
+The Dockerfile:
+1. Compiles the Go binary with `CGO_ENABLED=1`
+2. Downloads the ONNX Runtime shared library from GitHub releases
+3. Produces a minimal `debian:bookworm-slim` image
 
-- [Kubernetes Deployment](./kubernetes) - Production deployment
-- [Configuration](../guides/configuration) - Advanced configuration
+Run locally (requires an ONNX model file):
+```bash
+docker run --rm \
+  -v /path/to/models:/models \
+  -p 50051:50051 \
+  nids-classifier:latest \
+    --model /models/classifier.onnx
+```

@@ -2,207 +2,128 @@
 sidebar_position: 1
 ---
 
-# Quick Start Guide
-
-Get your Agentic NIDS up and running in 5 minutes!
+# Quick Start
 
 ## Prerequisites
 
 - Python 3.11+
-- Docker (optional)
-- Kubernetes cluster (optional for production)
+- Docker + Docker Compose
+- `libpcap-dev` (for live capture): `apt-get install libpcap-dev`
 
-## Local Development Setup
+## Local development (Docker Compose)
 
-### 1. Install Dependencies
+### 1. Start infrastructure
 
 ```bash
 cd agent
-pip install -e ".[all]"
+docker compose up -d
 ```
 
-### 2. Set Environment Variables
+This starts:
+- **NATS** on port 4222 (management UI on 8222)
+- **ClickHouse** on ports 8123 (HTTP) and 9000 (native)
 
-Choose your LLM provider:
+ClickHouse automatically creates the `nids` database, NATS engine table,
+materialized view, and `security_events` table via `schema.sql`.
 
-**Option A: OpenAI (GPT-4)**
-```bash
-export OPENAI_API_KEY="sk-your-openai-key"
-```
-
-**Option B: Anthropic (Claude Opus)**
-```bash
-export ANTHROPIC_API_KEY="sk-ant-your-anthropic-key"
-export LLM_PROVIDER="anthropic"
-export LLM_MODEL="claude-opus-4-5"
-```
-
-**Optional Services:**
-```bash
-# PagerDuty (optional)
-export PAGERDUTY_ROUTING_KEY="R0xxxxxxxxxxxxx"
-
-# InfluxDB (defaults to http://localhost:8086)
-export INFLUXDB_URL="http://localhost:8086"
-export INFLUXDB_TOKEN="your-influxdb-token"
-export INFLUXDB_ORG="nids"
-export INFLUXDB_BUCKET="network_security"
-
-# NATS (defaults to nats://localhost:4222)
-export NATS_URL="nats://localhost:4222"
-```
-
-### 3. Run Quick Test
+### 2. Install the collector
 
 ```bash
-python main.py --mode test
+cd agent
+pip install -e .
 ```
 
-**Expected Output:**
-```
-[INFO] Starting classifier agent on port 50051
-[INFO] Classifier agent initialized
-[INFO] LLM Explanation Agent initialized with Anthropic claude-opus-4-5
-
-✓  [1/20] 192.168.1.100 -> 10.0.0.50     | normal     | risk: low      | conf: 0.85
-⚠️ [2/20] 192.168.1.101 -> 203.0.113.45 | MALICIOUS  | risk: high     | conf: 0.87
-    └─ Port scan detected with high confidence...
-
-Test Summary: 6/20 malicious flows detected
-```
-
-## Docker Quick Start
-
-### 1. Build Docker Image
+### 3. Replay a PCAP file
 
 ```bash
-docker build -t agentic-nids -f infra/docker/Dockerfile.all-in-one .
+nids-collector --pcap data/normal.pcap --nats-url nats://localhost:4222
 ```
 
-### 2. Run Container
+### 4. Verify flows landed in ClickHouse
 
 ```bash
-docker run -it --rm \
-  -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -e PAGERDUTY_ROUTING_KEY=$PAGERDUTY_ROUTING_KEY \
-  -e INFLUXDB_URL=http://host.docker.internal:8086 \
-  -p 50051:50051 \
-  agentic-nids
+docker exec -it agent-clickhouse-1 \
+  clickhouse-client --query "SELECT count() FROM nids.flows"
 ```
 
-## Kubernetes Quick Start
-
-### 1. Create Namespace
+### 5. Run the full E2E test
 
 ```bash
-kubectl create namespace nids
+cd agent
+bash start_test.sh
 ```
 
-### 2. Create Secrets
+The test script:
+- Spins up Docker Compose (idempotent)
+- Waits until ClickHouse is ready
+- Replays 12 PCAPs (normal + attack scenarios) and validates row counts
+- Runs a ClickHouse end-to-end insert check
+- Tears down all containers at the end
+
+## Live capture (daemon mode)
 
 ```bash
-kubectl create secret generic agentic-nids-secrets \
-  --from-literal=openaiApiKey=$OPENAI_API_KEY \
-  --from-literal=anthropicApiKey=$ANTHROPIC_API_KEY \
-  --from-literal=pagerdutyRoutingKey=$PAGERDUTY_ROUTING_KEY \
-  --from-literal=influxdbToken=$(openssl rand -base64 32) \
-  --from-literal=influxdbPassword=$(openssl rand -base64 32) \
-  -n nids
+# Run as a daemon (double-fork, POSIX)
+sudo nids-collector \
+  --interface eth0 \
+  --nats-url nats://localhost:4222 \
+  --daemon \
+  --pid-file /var/run/nids-collector.pid \
+  --log-file /var/log/nids-collector.log
 ```
 
-### 3. Install Helm Chart
+Stop it:
+```bash
+kill $(cat /var/run/nids-collector.pid)
+```
+
+### Systemd service
 
 ```bash
-helm install agentic-nids ./infra/helm/agentic-nids \
-  --namespace nids \
-  --set llm.provider=anthropic \
-  --set llm.model=claude-opus-4-5
+sudo cp agent/nids-collector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nids-collector
 ```
 
-### 4. Verify Deployment
+## Collector configuration
 
-```bash
-kubectl get pods -n nids
-kubectl get svc -n nids
-```
-
-## Configuration Options
-
-### LLM Provider Selection
-
-**OpenAI Models:**
-- `gpt-4o`: Latest GPT-4 Omni
-- `gpt-4o-mini`: Cost-effective option
-- `gpt-4`: Standard GPT-4
-- `gpt-3.5-turbo`: Fastest, cheapest
-
-**Anthropic Models:**
-- `claude-opus-4-5`: Most capable (recommended)
-- `claude-sonnet-4-5`: Balanced performance/cost
-- `claude-haiku-4`: Fastest, most cost-effective
-
-### Collection Interval
-
-Edit `agent/config/ndpi_agent.yaml`:
-```yaml
-collection_interval: 180  # 3 minutes (default)
-# Or:
-collection_interval: 60   # 1 minute (more frequent)
-```
-
-### Alert Threshold
+`agent/config/config.yaml`:
 
 ```yaml
-alert_threshold: 0.7  # 70% confidence (default)
+nats:
+  url: "nats://localhost:4222"
+  subject: "flows.raw"
+
+capture:
+  interface: null          # set to interface name for live capture
+  pcap_file: null          # set to path for PCAP replay
+  idle_timeout: 120        # seconds — flow idle expiry
+  active_timeout: 1800     # seconds — max flow duration
+  statistical_analysis: true
+  promiscuous_mode: true
 ```
 
-## Next Steps
+All keys can be overridden with CLI flags — run `nids-collector --help` for
+the full list.
 
-- [Architecture Overview](../architecture/overview) - Understand the system
-- [Deployment Guide](../deployment/kubernetes) - Production deployment
-- [Configuration](../guides/configuration) - Advanced configuration
-- [API Reference](../api/agents) - Agent APIs
+## Available attack PCAPs
 
-## Troubleshooting
+Pre-extracted in `data/`:
 
-### LLM Provider Not Working
+| File | Traffic type |
+|------|-------------|
+| `normal.pcap` | Benign baseline traffic |
+| `synscan.pcap` | nmap SYN port scan |
+| `malware.pcap` | Malware C2 communication |
+| `WebattackSQLinj.pcap` | SQL injection |
+| `WebattackXSS.pcap` | XSS attack |
+| `dos_win98_smb_netbeui.pcap` | SMB DoS flood |
+| `ftp_failed.pcap` | FTP brute-force |
+| `ssh.pcap` | SSH session |
+| `smtp-starttls.pcap` | SMTP with STARTTLS |
 
-```bash
-# Verify API key is set
-echo $OPENAI_API_KEY
-echo $ANTHROPIC_API_KEY
+## Next steps
 
-# Test API key
-curl https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-opus-4-5","max_tokens":10,"messages":[{"role":"user","content":"test"}]}'
-```
-
-### NATS Connection Failed
-
-```bash
-# Start NATS server
-docker run -d --name nats -p 4222:4222 nats:2.10
-
-# Verify connection
-nc -zv localhost 4222
-```
-
-### InfluxDB Not Available
-
-```bash
-# Start InfluxDB
-docker run -d --name influxdb \
-  -p 8086:8086 \
-  -e DOCKER_INFLUXDB_INIT_MODE=setup \
-  -e DOCKER_INFLUXDB_INIT_USERNAME=admin \
-  -e DOCKER_INFLUXDB_INIT_PASSWORD=password123 \
-  -e DOCKER_INFLUXDB_INIT_ORG=nids \
-  -e DOCKER_INFLUXDB_INIT_BUCKET=network_security \
-  influxdb:2.7
-
-# Get token
-docker exec influxdb influx auth list --json | jq -r '.[0].token'
-```
+- [Architecture Overview](../architecture/overview) — understand the system
+- [Kubernetes Deployment](../deployment/kubernetes) — production setup
+- [Configuration](../guides/configuration) — advanced options

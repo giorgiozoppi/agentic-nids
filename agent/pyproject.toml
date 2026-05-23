@@ -1,74 +1,31 @@
 [project]
-name = "agentic-nids-framework"
+name = "nids-collector"
 version = "0.1.0"
-description = "Agentic Network Intrusion Detection System - ML/AI Agent"
+description = "NFStream → NATS collector for network flow data"
 requires-python = ">=3.12"
 authors = [
-    {name = "Agentic NIDS Team"}
+    {name = "Giorgio Zoppi", email = "giorgio.zoppi@gmail.com"}
 ]
 license = {text = "MIT"}
 
 dependencies = [
-    # Core ML/Data libraries
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    # Packet capture and processing - CORE for data collection
-    "scapy>=2.5.0",
     "nfstream>=6.5.0",
-    # System utilities
+    "nats-py>=2.6.0",
+    "msgpack>=1.0.0",
     "psutil>=5.9.0",
-    # Configuration and validation
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
-    "python-dotenv>=1.0.0",
-    # CLI
     "typer>=0.9.0",
-    # LangChain LLM integration
-    "langchain>=1.2.0",
-    "langchain-core>=0.3.0",
-    "langchain-openai>=1.1.6",
-    "langchain-anthropic>=1.3.0",
 ]
 
 [project.optional-dependencies]
-# Full ML stack for training models (comment out - only needed for classifier agent)
-# ml = [
-#     "scikit-learn>=1.3.0",
-#     "xgboost>=2.0.0",
-#     "lightgbm>=4.0.0",
-# ]
-
-# Explainable AI (comment out - only needed for explanation agent)
-# xai = [
-#     "shap>=0.44.0",
-#     "lime>=0.2.0",
-# ]
-
-# Development dependencies
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "black>=23.0.0",
     "ruff>=0.1.0",
-    "mypy>=1.7.0",
 ]
 
-# All optional dependencies
-# all = [
-#     "agentic-nids-framework[dev]",
-# ]
-
 [project.scripts]
-# Main data collector agent using NFStream library (recommended)
-nfstream-collector = "nfstream_collector_agent:cli"
-
-# Legacy nDPI collector (uses manual packet processing with scapy)
-# ndpi-collector = "ndpi_collector_agent:main"
-
-# Classifier agent (commented out for now - focus on data collection first)
-# classifier-agent = "classifier_agent_a2a:main"
+nids-collector = "collector:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -77,23 +34,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["."]
 
-[tool.black]
-line-length = 100
-target-version = ['py312']
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
 asyncio_mode = "auto"
