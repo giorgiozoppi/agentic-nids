@@ -1,0 +1,158 @@
+version: "3.9"
+
+# Agentic NIDS — Ingestion stack
+#
+# Services
+#   nats        — message broker (NATS 2.x)
+#   clickhouse  — columnar store for network flows
+#   ch-ui       — ClickHouse web UI  (http://localhost:5521)
+#   bridge      — NATS → ClickHouse writer
+#   collector   — NFStream → NATS producer
+#
+# Quick start (PCAP mode):
+#   PCAP_FILE=/path/to/traffic.pcap docker compose up
+#
+# Live capture (requires root / NET_RAW):
+#   CAPTURE_IFACE=eth0 docker compose up
+#   docker compose exec collector sudo nfstream-collector --interface eth0
+#
+# ClickHouse UI: http://localhost:5521
+#   Connection URL: http://clickhouse:8123  user: default  password: (empty)
+
+networks:
+  nids:
+    driver: bridge
+
+volumes:
+  clickhouse-data:
+
+# ---------------------------------------------------------------------------
+services:
+
+  # -------------------------------------------------------------------------
+  nats:
+    image: nats:2.10-alpine
+    container_name: nids-nats
+    ports:
+      - "4222:4222"    # client connections
+      - "8222:8222"    # HTTP monitoring
+    command: ["-js", "-m", "8222"]   # enable JetStream + monitoring
+    networks: [nids]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: nids-clickhouse
+    ports:
+      - "8123:8123"   # HTTP interface (used by ch-ui and clickhouse-connect)
+      - "9000:9000"   # native TCP interface
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./agent/clickhouse_schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    environment:
+      CLICKHOUSE_DB: nids
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks: [nids]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------------------------------------------------------
+  # ClickHouse web UI — https://github.com/caioricciuti/ch-ui
+  ch-ui:
+    image: ghcr.io/caioricciuti/ch-ui:latest
+    container_name: nids-ch-ui
+    ports:
+      - "5521:5521"
+    environment:
+      VITE_CLICKHOUSE_URL:  "http://localhost:8123"   # user browser → CH
+      VITE_CLICKHOUSE_USER: "default"
+      VITE_CLICKHOUSE_PASS: ""
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks: [nids]
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # NATS → ClickHouse bridge (stateless, scale horizontally if needed)
+  bridge:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.collector
+    container_name: nids-bridge
+    command: ["nats-ch-bridge"]
+    environment:
+      NATS_URL:            "nats://nats:4222"
+      NATS_SUBJECT:        "nids.flows"
+      NATS_QUEUE_GROUP:    "ch-bridge"
+      CLICKHOUSE_HOST:     "clickhouse"
+      CLICKHOUSE_PORT:     "8123"
+      CLICKHOUSE_USER:     "default"
+      CLICKHOUSE_PASSWORD: ""
+      BRIDGE_BATCH_SIZE:   "200"
+      BRIDGE_FLUSH_INTERVAL: "5"
+    depends_on:
+      nats:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks: [nids]
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # NFStream collector — daemon
+  #
+  # PCAP mode (default):
+  #   PCAP_FILE=/absolute/path/to/traffic.pcap docker compose up collector
+  #   The container exits cleanly once the file is exhausted.
+  #
+  # Live capture (requires root / NET_RAW capability):
+  #   CAPTURE_IFACE=eth0 docker compose up collector
+  #   Uncomment cap_add and network_mode below.
+  collector:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.collector
+    container_name: nids-collector
+    # The entrypoint reads the PCAP_FILE / CAPTURE_IFACE env vars set at
+    # docker compose time and passes them as CLI flags.
+    entrypoint: >
+      /bin/sh -c '
+        set -e
+        CMD="nfstream-collector --config /app/config/nfstream_agent.yaml --nats-url nats://nats:4222"
+        [ -n "$$PCAP_FILE" ]      && CMD="$$CMD --pcap $$PCAP_FILE"
+        [ -n "$$CAPTURE_IFACE" ]  && CMD="$$CMD --interface $$CAPTURE_IFACE"
+        exec $$CMD
+      '
+    volumes:
+      - ./agent/config:/app/config:ro
+      # Mount a PCAP for offline analysis (must match PCAP_FILE env var):
+      # - /path/to/traffic.pcap:/data/traffic.pcap:ro
+    environment:
+      PCAP_FILE:     "${PCAP_FILE:-}"
+      CAPTURE_IFACE: "${CAPTURE_IFACE:-}"
+    # Uncomment for live capture (requires privileged interface access):
+    # cap_add: [NET_RAW, NET_ADMIN]
+    # network_mode: host
+    depends_on:
+      nats:
+        condition: service_healthy
+    networks: [nids]
+    # 'unless-stopped' keeps the collector running as a daemon for live capture.
+    # For PCAP mode the container exits on its own after processing the file.
+    restart: unless-stopped
+    stop_grace_period: 30s   # time allowed for graceful shutdown on SIGTERM
