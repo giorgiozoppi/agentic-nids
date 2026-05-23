@@ -1,0 +1,16 @@
+nats:
+  url: "nats://localhost:4222"
+  subject: "flows.raw"
+
+capture:
+  interface: null        # e.g. eth0  (live capture, requires root)
+  pcap_file: null        # e.g. traffic.pcap  (offline analysis)
+  bpf_filter: null       # e.g. "tcp port 443"
+  idle_timeout: 120      # seconds before an idle flow expires
+  active_timeout: 1800   # seconds before a long-running flow is forced out
+  decode_tunnels: true
+  n_dissections: 20      # nDPI depth (0=off, 20=max)
+  statistical_analysis: true
+  splt_analysis: 0       # early-classification packets (0=disabled)
+  promiscuous_mode: true
+  snapshot_length: 1536
