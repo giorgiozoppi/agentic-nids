@@ -1,0 +1,85 @@
+# orchestrator-cronjob.yaml
+#
+# Runs the orchestrator every 5 minutes as a Kubernetes CronJob.
+# concurrencyPolicy: Forbid ensures that if a job is still running when the
+# next trigger fires, the new invocation is skipped rather than starting a
+# second concurrent job (avoids duplicate security event writes).
+#
+# The /state PVC persists the "last_processed_at" timestamp file between runs.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orchestrator-state
+  namespace: nids
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: orchestrator
+  namespace: nids
+  labels:
+    app: orchestrator
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: orchestrator
+          annotations:
+            # Vault agent sidecar injection
+            vault.hashicorp.com/agent-inject: "true"
+            vault.hashicorp.com/role: "nids"
+            # Inject ClickHouse credentials
+            vault.hashicorp.com/agent-inject-secret-clickhouse: "secret/nids/clickhouse"
+            vault.hashicorp.com/agent-inject-template-clickhouse: |
+              {{- with secret "secret/nids/clickhouse" -}}
+              {{ .Data.data.password }}
+              {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: orchestrator
+              image: nids/orchestrator:latest
+              imagePullPolicy: IfNotPresent
+              args:
+                - -state-dir=/state
+                - -ch-addr=clickhouse.nids.svc.cluster.local:9000
+                - -ch-db=nids
+                - -ch-user=nids_orchestrator
+                - -classifier-addr=classifier.nids.svc.cluster.local:50051
+                - -batch-size=256
+                - -limit=10000
+              env:
+                - name: CH_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: clickhouse-credentials
+                      key: password
+              # Override -ch-password via env is idiomatic; alternatively parse
+              # /vault/secrets/clickhouse at startup.
+              volumeMounts:
+                - name: state
+                  mountPath: /state
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+          volumes:
+            - name: state
+              persistentVolumeClaim:
+                claimName: orchestrator-state

@@ -1,0 +1,111 @@
+# classifier-deployment.yaml
+#
+# NOTE: The ONNX model file cannot be stored in a ConfigMap (10 MiB limit).
+# Provision the /models PVC below and populate it by one of:
+#   a) An init-container that downloads the model from object storage (S3/GCS/MinIO).
+#   b) A separate Kubernetes Job that writes the model file to the PVC.
+# Example init-container snippet:
+#   initContainers:
+#   - name: model-downloader
+#     image: amazon/aws-cli:latest
+#     command: ["aws","s3","cp","s3://my-bucket/classifier.onnx","/models/classifier.onnx"]
+#     volumeMounts:
+#     - name: models
+#       mountPath: /models
+#
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: classifier-models
+  namespace: nids
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: classifier
+  namespace: nids
+  labels:
+    app: classifier
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: classifier
+  template:
+    metadata:
+      labels:
+        app: classifier
+      annotations:
+        # Vault agent sidecar injection — secrets are written to /vault/secrets/
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "nids"
+        # Example: inject a secret as an env-file
+        vault.hashicorp.com/agent-inject-secret-config: "secret/nids/classifier"
+        vault.hashicorp.com/agent-inject-template-config: |
+          {{- with secret "secret/nids/classifier" -}}
+          export CLASSIFIER_SECRET={{ .Data.data.secret }}
+          {{- end }}
+    spec:
+      containers:
+        - name: classifier
+          image: nids/classifier:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - -addr=:50051
+            - -model=/models/classifier.onnx
+            - -ort-lib=/usr/lib/libonnxruntime.so
+            - -input-name=float_input
+            - -output-name=probabilities
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: classifier-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: classifier
+  namespace: nids
+  labels:
+    app: classifier
+spec:
+  type: ClusterIP
+  selector:
+    app: classifier
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      protocol: TCP

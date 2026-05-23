@@ -1,0 +1,16 @@
+[Unit]
+Description=NIDS NFStream Collector
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nids-collector --config /etc/nids/config.yaml --interface eth0
+Restart=on-failure
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nids-collector
+
+[Install]
+WantedBy=multi-user.target

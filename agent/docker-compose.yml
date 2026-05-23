@@ -1,0 +1,31 @@
+services:
+  nats:
+    image: nats:2-alpine
+    container_name: nids-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"   # HTTP monitoring
+    command: ["--http_port", "8222"]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: nids-clickhouse
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native protocol
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    environment:
+      CLICKHOUSE_DB: nids
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    depends_on:
+      - nats
+
+volumes:
+  clickhouse_data:

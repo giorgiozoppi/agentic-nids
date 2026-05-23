@@ -1,0 +1,225 @@
+---
+# ServiceAccount used by the Vault server pods and by the Kubernetes auth
+# token-review API call.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: nids
+
+---
+# Vault needs to call the TokenReview API to verify service-account tokens
+# presented by workloads during Kubernetes auth.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-server-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: nids
+
+---
+# Allow Vault to read its own service-account token (needed for k8s auth
+# self-configuration).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vault-server
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vault-server
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: nids
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: nids
+data:
+  vault.hcl: |
+    ui            = true
+    disable_mlock = true          # required in containers without IPC_LOCK
+
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = "true"        # terminate TLS at ingress / service mesh
+    }
+
+    storage "raft" {
+      path    = "/vault/data"
+      node_id = "VAULT_NODE_ID"   # replaced by init-container
+    }
+
+    api_addr     = "http://vault.nids.svc.cluster.local:8200"
+    cluster_addr = "https://$(VAULT_POD_NAME).vault-internal.nids.svc.cluster.local:8201"
+
+---
+# Headless service for Raft peer discovery (pod-to-pod 8201).
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-internal
+  namespace: nids
+  labels:
+    app: vault
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: vault
+  ports:
+    - name: http
+      port: 8200
+    - name: cluster
+      port: 8201
+
+---
+# Regular ClusterIP service for workload access to the Vault API.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: nids
+  labels:
+    app: vault
+spec:
+  selector:
+    app: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
+    - name: cluster
+      port: 8201
+      targetPort: 8201
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: nids
+  labels:
+    app: vault
+spec:
+  serviceName: vault-internal
+  replicas: 1                     # increase to 3+ for Raft HA
+  selector:
+    matchLabels:
+      app: vault
+  template:
+    metadata:
+      labels:
+        app: vault
+      annotations:
+        # Prevent the injector from injecting secrets into Vault itself.
+        vault.hashicorp.com/agent-inject: "false"
+    spec:
+      serviceAccountName: vault
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        # Patch the node_id in vault.hcl with the actual pod name so each
+        # Raft replica has a unique, stable ID.
+        - name: config-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              sed "s/VAULT_NODE_ID/${POD_NAME}/" /vault/config-tpl/vault.hcl \
+                > /vault/config/vault.hcl
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: config-tpl
+              mountPath: /vault/config-tpl
+            - name: config
+              mountPath: /vault/config
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.17
+          args: ["server", "-config=/vault/config/vault.hcl"]
+          ports:
+            - name: http
+              containerPort: 8200
+            - name: cluster
+              containerPort: 8201
+          env:
+            - name: VAULT_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            - name: VAULT_API_ADDR
+              value: "http://$(VAULT_POD_NAME).vault-internal.nids.svc.cluster.local:8200"
+            - name: VAULT_CLUSTER_ADDR
+              value: "https://$(VAULT_POD_NAME).vault-internal.nids.svc.cluster.local:8201"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["IPC_LOCK"]  # needed for mlock; remove if disable_mlock=true
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: 8200
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /vault/config
+            - name: data
+              mountPath: /vault/data
+      volumes:
+        - name: config-tpl
+          configMap:
+            name: vault-config
+        - name: config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

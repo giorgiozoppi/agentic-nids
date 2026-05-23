@@ -1,0 +1,157 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-agent-injector
+  namespace: nids
+
+---
+# The injector needs broad read access to pods and the ability to write
+# MutatingWebhookConfiguration (to keep the caBundle up-to-date).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vault-agent-injector
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-agent-injector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vault-agent-injector
+subjects:
+  - kind: ServiceAccount
+    name: vault-agent-injector
+    namespace: nids
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-agent-injector
+  namespace: nids
+  labels:
+    app: vault-agent-injector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-agent-injector
+  template:
+    metadata:
+      labels:
+        app: vault-agent-injector
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    spec:
+      serviceAccountName: vault-agent-injector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+      containers:
+        - name: sidecar-injector
+          image: hashicorp/vault-k8s:1.4
+          args:
+            - agent-inject
+            - -log-level=info
+            - -log-format=standard
+          env:
+            - name: AGENT_INJECT_LISTEN
+              value: ":8080"
+            - name: AGENT_INJECT_VAULT_ADDR
+              value: "http://vault.nids.svc.cluster.local:8200"
+            - name: AGENT_INJECT_VAULT_AUTH_PATH
+              value: "auth/kubernetes"
+            - name: AGENT_INJECT_VAULT_IMAGE
+              value: "hashicorp/vault:1.17"
+            # TLS auto-generation: the injector generates a self-signed cert,
+            # stores it in the Secret below, and patches the webhook caBundle.
+            - name: AGENT_INJECT_TLS_AUTO
+              value: "vault-agent-injector-cfg"
+            - name: AGENT_INJECT_TLS_AUTO_HOSTS
+              value: "vault-agent-injector-svc,vault-agent-injector-svc.nids,vault-agent-injector-svc.nids.svc,vault-agent-injector-svc.nids.svc.cluster.local"
+          ports:
+            - name: https
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8080
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8080
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-agent-injector-svc
+  namespace: nids
+  labels:
+    app: vault-agent-injector
+spec:
+  selector:
+    app: vault-agent-injector
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8080
+
+---
+# The caBundle field is left empty here; the injector patches it automatically
+# via AGENT_INJECT_TLS_AUTO once it generates its self-signed cert.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: vault-agent-injector-cfg
+  labels:
+    app: vault-agent-injector
+webhooks:
+  - name: vault.hashicorp.com
+    admissionReviewVersions: ["v1", "v1beta1"]
+    clientConfig:
+      # caBundle is populated by the injector via TLS auto-rotation.
+      caBundle: ""
+      service:
+        name: vault-agent-injector-svc
+        namespace: nids
+        path: "/mutate"
+        port: 443
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    failurePolicy: Ignore
+    sideEffects: None
+    namespaceSelector:
+      matchLabels:
+        vault-injection: enabled

@@ -1,0 +1,31 @@
+# NFStream collector + NATS→ClickHouse bridge
+# Requires root (or NET_RAW capability) for live capture.
+# For PCAP analysis, run as any user.
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ make \
+        libpcap-dev \
+        tcpdump \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY agent/pyproject.toml ./
+RUN pip install --no-cache-dir --upgrade pip uv \
+    && uv pip install --system -e "."
+
+COPY agent/ ./
+
+# Non-root user; override with --user 0 when live capture is required
+RUN groupadd -r nids && useradd -r -g nids nids \
+    && mkdir -p /app/data /app/logs \
+    && chown -R nids:nids /app
+
+USER nids
+
+# Default: start the NATS→ClickHouse bridge.
+# Override CMD to run nfstream-collector for the capture side.
+CMD ["nats-ch-bridge"]

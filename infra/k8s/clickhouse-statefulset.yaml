@@ -1,0 +1,156 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clickhouse
+  namespace: nids
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: nids
+  labels:
+    app: clickhouse
+spec:
+  serviceName: clickhouse-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+      annotations:
+        # ── Vault agent injection ───────────────────────────────────────────
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "nids"
+
+        # Render ClickHouse credentials as a shell-sourceable env file.
+        vault.hashicorp.com/agent-inject-secret-clickhouse.env: "kv/data/nids/clickhouse"
+        vault.hashicorp.com/agent-inject-template-clickhouse.env: |
+          {{- with secret "kv/data/nids/clickhouse" -}}
+          export CLICKHOUSE_USER="{{ .Data.data.username }}"
+          export CLICKHOUSE_PASSWORD="{{ .Data.data.password }}"
+          {{- end }}
+
+        # Render the ClickHouse users.xml so it reads credentials from Vault.
+        vault.hashicorp.com/agent-inject-secret-users.xml: "kv/data/nids/clickhouse"
+        vault.hashicorp.com/agent-inject-template-users.xml: |
+          {{- with secret "kv/data/nids/clickhouse" -}}
+          <clickhouse>
+            <users>
+              <{{ .Data.data.username }}>
+                <password>{{ .Data.data.password }}</password>
+                <networks><ip>::/0</ip></networks>
+                <profile>default</profile>
+                <quota>default</quota>
+              </{{ .Data.data.username }}>
+            </users>
+          </clickhouse>
+          {{- end }}
+    spec:
+      serviceAccountName: clickhouse
+      securityContext:
+        fsGroup: 101
+      initContainers:
+        # Copy the Vault-injected users.xml into the ClickHouse config directory
+        # before the server starts (Vault agent init runs before app containers).
+        - name: config-copy
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until [ -f /vault/secrets/users.xml ]; do
+                echo "Waiting for Vault agent to write users.xml…"; sleep 1
+              done
+              cp /vault/secrets/users.xml /etc/clickhouse-server/users.d/users.xml
+              echo "users.xml installed."
+          volumeMounts:
+            - name: ch-users-config
+              mountPath: /etc/clickhouse-server/users.d
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24-alpine
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          env:
+            - name: CLICKHOUSE_DB
+              value: "nids"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: ch-users-config
+              mountPath: /etc/clickhouse-server/users.d
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 30
+            periodSeconds: 15
+      volumes:
+        - name: ch-users-config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-headless
+  namespace: nids
+  labels:
+    app: clickhouse
+spec:
+  clusterIP: None
+  selector:
+    app: clickhouse
+  ports:
+    - name: native
+      port: 9000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: nids
+  labels:
+    app: clickhouse
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000

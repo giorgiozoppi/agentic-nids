@@ -1,0 +1,183 @@
+---
+# RBAC that lets the init job create/patch the vault-keys Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-init
+  namespace: nids
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-init
+  namespace: nids
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vault-init
+subjects:
+  - kind: ServiceAccount
+    name: vault-init
+    namespace: nids
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-init
+  namespace: nids
+
+---
+# This Job runs once after Vault is deployed.  It:
+#   1. Initialises Vault (Shamir 1-of-1) and stores keys in a K8s Secret.
+#   2. Unseals Vault.
+#   3. Enables KV-v2 secrets engine at "kv/".
+#   4. Writes the nids secrets (ClickHouse creds, NATS URL).
+#   5. Enables the Kubernetes auth method.
+#   6. Configures Kubernetes auth (uses the pod's own service-account token).
+#   7. Creates the "nids-policy" Vault policy.
+#   8. Creates the "nids" Vault role (bound to nids/* service accounts).
+#
+# WARNING: Storing unseal keys in a K8s Secret is acceptable for dev/staging.
+# For production use Vault auto-unseal (AWS KMS, GCP CKMS, Azure Key Vault, etc.).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-init
+  namespace: nids
+  annotations:
+    # Re-run this job after deleting Vault's PVC to re-initialise a fresh cluster.
+    helm.sh/hook: post-install
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: vault-init
+      containers:
+        - name: vault-init
+          image: hashicorp/vault:1.17
+          env:
+            - name: VAULT_ADDR
+              value: "http://vault.nids.svc.cluster.local:8200"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            # Credentials for the nids secrets — override via Kustomize / Helm values.
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nids-bootstrap-secrets
+                  key: clickhouse-password
+                  optional: true   # falls back to default below
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nids-bootstrap-secrets
+                  key: nats-password
+                  optional: true
+          command:
+            - /bin/sh
+            - -ce
+            - |
+              VAULT_ADDR="${VAULT_ADDR:-http://vault.nids.svc.cluster.local:8200}"
+              CH_PASS="${CLICKHOUSE_PASSWORD:-changeme-clickhouse}"
+              NATS_PASS="${NATS_PASSWORD:-changeme-nats}"
+
+              # ── Wait for Vault to be reachable ────────────────────────────
+              until vault status 2>&1 | grep -q "Initialized"; do
+                echo "Waiting for Vault API…"; sleep 3
+              done
+
+              # ── Initialise (idempotent) ───────────────────────────────────
+              if vault status 2>&1 | grep -q "Initialized.*false"; then
+                echo "Initialising Vault…"
+                vault operator init \
+                  -key-shares=1 \
+                  -key-threshold=1 \
+                  -format=json > /tmp/vault-init.json
+
+                UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' /tmp/vault-init.json)
+                ROOT_TOKEN=$(jq -r '.root_token'          /tmp/vault-init.json)
+
+                # Persist keys in a K8s Secret for emergency access.
+                # In production replace with auto-unseal.
+                kubectl create secret generic vault-keys \
+                  --namespace=nids \
+                  --from-literal=unseal-key="${UNSEAL_KEY}" \
+                  --from-literal=root-token="${ROOT_TOKEN}" \
+                  --save-config \
+                  --dry-run=client -o yaml | kubectl apply -f -
+
+                echo "Unsealing Vault…"
+                vault operator unseal "${UNSEAL_KEY}"
+                export VAULT_TOKEN="${ROOT_TOKEN}"
+              else
+                echo "Vault already initialised — retrieving root token from Secret…"
+                export VAULT_TOKEN=$(kubectl get secret vault-keys \
+                  --namespace=nids \
+                  -o jsonpath='{.data.root-token}' | base64 -d)
+
+                # Unseal if sealed
+                if vault status 2>&1 | grep -q "Sealed.*true"; then
+                  UNSEAL_KEY=$(kubectl get secret vault-keys \
+                    --namespace=nids \
+                    -o jsonpath='{.data.unseal-key}' | base64 -d)
+                  vault operator unseal "${UNSEAL_KEY}"
+                fi
+              fi
+
+              # ── KV-v2 secrets engine ──────────────────────────────────────
+              vault secrets enable -path=kv kv-v2 2>/dev/null || \
+                echo "kv already enabled"
+
+              # ── Write nids secrets ────────────────────────────────────────
+              vault kv put kv/nids/clickhouse \
+                username="default" \
+                password="${CH_PASS}"
+
+              vault kv put kv/nids/nats \
+                url="nats://nats.nids.svc.cluster.local:4222" \
+                username="nids" \
+                password="${NATS_PASS}"
+
+              vault kv put kv/nids/collector \
+                nats_url="nats://nids:${NATS_PASS}@nats.nids.svc.cluster.local:4222" \
+                subject="flows.raw"
+
+              echo "Secrets written."
+
+              # ── Kubernetes auth method ────────────────────────────────────
+              vault auth enable kubernetes 2>/dev/null || \
+                echo "kubernetes auth already enabled"
+
+              # Use the pod's projected service-account token for configuration.
+              vault write auth/kubernetes/config \
+                kubernetes_host="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}" \
+                token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+                kubernetes_ca_cert="$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)" \
+                issuer="https://kubernetes.default.svc.cluster.local"
+
+              # ── Vault policy ──────────────────────────────────────────────
+              vault policy write nids-policy - << 'EOF'
+              path "kv/data/nids/*" {
+                capabilities = ["read"]
+              }
+              path "kv/metadata/nids/*" {
+                capabilities = ["list", "read"]
+              }
+              EOF
+
+              # ── Kubernetes role (binds SA names → policy) ─────────────────
+              vault write auth/kubernetes/role/nids \
+                bound_service_account_names="nids-collector,clickhouse,nats,default" \
+                bound_service_account_namespaces="nids" \
+                policies="nids-policy" \
+                ttl="24h"
+
+              echo "Vault bootstrap complete."

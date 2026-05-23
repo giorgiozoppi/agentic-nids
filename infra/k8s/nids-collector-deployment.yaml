@@ -1,0 +1,112 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nids-collector
+  namespace: nids
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nids-collector-config
+  namespace: nids
+data:
+  # Non-sensitive defaults.  Secrets (NATS creds, ClickHouse password) are
+  # injected by Vault agent into /vault/secrets/collector.env at runtime.
+  config.yaml: |
+    capture:
+      interface: "eth0"
+      idle_timeout: 120
+      active_timeout: 1800
+      decode_tunnels: true
+      n_dissections: 20
+      statistical_analysis: true
+      splt_analysis: 0
+      promiscuous_mode: true
+      snapshot_length: 1536
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nids-collector
+  namespace: nids
+  labels:
+    app: nids-collector
+spec:
+  # Run one replica per node using a DaemonSet in production (for live capture
+  # on every node).  Deployment is used here for simplicity.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nids-collector
+  template:
+    metadata:
+      labels:
+        app: nids-collector
+      annotations:
+        # ── Vault agent injection ───────────────────────────────────────────
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "nids"
+
+        # Render all collector secrets into a single env file that the
+        # entrypoint sources before starting the collector.
+        vault.hashicorp.com/agent-inject-secret-collector.env: "kv/data/nids/collector"
+        vault.hashicorp.com/agent-inject-template-collector.env: |
+          {{- with secret "kv/data/nids/collector" -}}
+          export NIDS_NATS_URL="{{ .Data.data.nats_url }}"
+          export NIDS_NATS_SUBJECT="{{ .Data.data.subject }}"
+          {{- end }}
+
+        # Also inject NATS credentials separately (for rotation awareness).
+        vault.hashicorp.com/agent-inject-secret-nats.env: "kv/data/nids/nats"
+        vault.hashicorp.com/agent-inject-template-nats.env: |
+          {{- with secret "kv/data/nids/nats" -}}
+          export NATS_USERNAME="{{ .Data.data.username }}"
+          export NATS_PASSWORD="{{ .Data.data.password }}"
+          {{- end }}
+
+        # Re-inject (SIGHUP) when secrets rotate in Vault.
+        vault.hashicorp.com/agent-inject-command-collector.env: "kill -HUP 1"
+    spec:
+      serviceAccountName: nids-collector
+      # Live packet capture requires NET_ADMIN + NET_RAW on the host network.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: collector
+          image: ghcr.io/your-org/nids-collector:latest   # replace with your image
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Source Vault-injected secrets.
+              . /vault/secrets/collector.env
+              . /vault/secrets/nats.env
+              exec nids-collector \
+                --config /etc/nids/config.yaml \
+                --nats-url "${NIDS_NATS_URL}" \
+                --subject  "${NIDS_NATS_SUBJECT}"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nids
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"]
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: nids-collector-config
