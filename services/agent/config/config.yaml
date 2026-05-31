@@ -3,7 +3,7 @@ nats:
   subject: "flows.raw"
 
 capture:
-  interface: null         # e.g. eth0  (live capture, requires root)
+  interface: wlo1         # e.g. eth0  (live capture, requires root)
   pcap_file: null         # e.g. traffic.pcap  (offline analysis)
 
   # No BPF restriction — capture all IPv4, IPv6, TCP, UDP, ICMP traffic.
@@ -27,8 +27,11 @@ capture:
   splt_analysis: 0        # early-classification packets (0 = disabled)
 
   # Flow expiry
-  idle_timeout: 120       # seconds before an idle flow is exported
+  idle_timeout: 180       # seconds before an idle flow is exported
   active_timeout: 1800    # maximum lifetime of any single flow
 
 status:
   port: 8080              # FastAPI state API (GET /health, GET /state)
+
+logging:
+  level: debug            # debug | info | warning | error  (ConfigMap: LOG_LEVEL)

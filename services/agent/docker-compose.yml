@@ -34,8 +34,8 @@ services:
       - NET_ADMIN
     environment:
       - NATS_URL=nats://localhost:4222
-      - CAPTURE_INTERFACE=eno1
-    command: ["--interface", "eno1"]
+      - CAPTURE_INTERFACE=wlo1
+    command: ["--interface", "wlo1"]
     depends_on:
       nats:
         condition: service_healthy
@@ -47,6 +47,7 @@ services:
       start_period: 15s
     restart: unless-stopped
     volumes:
+      - ./config:/app/config:ro
       - collector-logs:/var/log
 
 volumes:

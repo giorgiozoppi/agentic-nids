@@ -189,6 +189,8 @@ def _apply_env_overrides(cfg: dict) -> None:
         cap["pcap_file"] = v
     if v := os.environ.get("COLLECTOR_STATUS_PORT"):
         status["port"] = int(v)
+    if v := os.environ.get("LOG_LEVEL"):
+        cfg.setdefault("logging", {})["level"] = v
 
 
 def flow_to_dict(flow, statistical: bool) -> dict:
@@ -310,6 +312,16 @@ async def _run(cfg: dict, state: CollectorState) -> None:
                 state.flows_published += 1
                 state.last_flow_at = datetime.now(timezone.utc).isoformat()
                 state.record_flow(fd)
+                logger.debug(
+                    "flow %s  %s:%s -> %s:%s  proto=%s app=%s  pkts=%s bytes=%s",
+                    fd["flow_id"],
+                    fd["src_ip"], fd["src_port"],
+                    fd["dst_ip"], fd["dst_port"],
+                    fd["protocol"],
+                    fd["application_name"],
+                    fd["bidirectional_packets"],
+                    fd["bidirectional_bytes"],
+                )
                 if state.flows_published % 100 == 0:
                     logger.info("Published %d flows", state.flows_published)
             except Exception as e:
@@ -364,10 +376,10 @@ async def _start_all(cfg: dict, state: CollectorState, status_port: int) -> None
 # Logging / daemonization helpers
 # ---------------------------------------------------------------------------
 
-def _setup_logging(log_file: Optional[str]) -> None:
+def _setup_logging(log_file: Optional[str], level: str = "info") -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
     handler: logging.Handler
     if log_file:
         handler = logging.handlers.RotatingFileHandler(
@@ -511,13 +523,15 @@ def main() -> None:
         typer.echo(f"  NATS URL       : {effective_nats}")
         typer.echo(f"  NATS subject   : {effective_subject}")
         typer.echo(f"  status port    : {effective_port}")
+        log_level = cfg.get("logging", {}).get("level", "info")
+        typer.echo(f"  log level      : {log_level}")
         if daemon:
             typer.echo(f"  mode           : daemon (pid={pid_file}, log={log_file})")
             _daemonize(pid_file, log_file)
-            _setup_logging(log_file)
+            _setup_logging(log_file, log_level)
         else:
             typer.echo( "  mode           : foreground")
-            _setup_logging(None)
+            _setup_logging(None, log_level)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

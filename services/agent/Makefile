@@ -15,7 +15,7 @@ test:
 
 # Run the collector in the foreground (root required for live capture)
 # Override the interface: make run INTERFACE=eth0
-INTERFACE ?= $(CAPTURE_INTERFACE)
+INTERFACE ?= $(or $(CAPTURE_INTERFACE),wlo1)
 run: build
 	sudo -E uv run nids-collector --interface $(INTERFACE)
 
@@ -26,12 +26,6 @@ docker:
 	  -t $(IMAGE) \
 	  ../..
 
-# Run the collector container (live capture requires host network + NET_RAW/NET_ADMIN)
-# Override the interface: make docker-run INTERFACE=eth0
+# Run the collector container via docker-compose
 docker-run:
-	docker run --rm \
-	  --network host \
-	  --cap-add NET_RAW \
-	  --cap-add NET_ADMIN \
-	  $(IMAGE) \
-	  --interface $(INTERFACE)
+	docker compose up
