@@ -4,17 +4,19 @@ version: "3.9"
 #
 # Services
 #   nats        — message broker (NATS 2.x)
-#   clickhouse  — columnar store for network flows
+#   clickhouse  — columnar store (reads NATS natively via NATS engine table)
 #   ch-ui       — ClickHouse web UI  (http://localhost:5521)
-#   bridge      — NATS → ClickHouse writer
 #   collector   — NFStream → NATS producer
+#
+# No separate NATS→ClickHouse bridge is needed: ClickHouse consumes from NATS
+# directly using its built-in NATS table engine + a materialized view.
 #
 # Quick start (PCAP mode):
 #   PCAP_FILE=/path/to/traffic.pcap docker compose up
 #
 # Live capture (requires root / NET_RAW):
 #   CAPTURE_IFACE=eth0 docker compose up
-#   docker compose exec collector sudo nfstream-collector --interface eth0
+#   docker compose exec collector sudo nids-collector --interface eth0
 #
 # ClickHouse UI: http://localhost:5521
 #   Connection URL: http://clickhouse:8123  user: default  password: (empty)
@@ -54,7 +56,7 @@ services:
       - "9000:9000"   # native TCP interface
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./agent/clickhouse_schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ./services/agent/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     environment:
       CLICKHOUSE_DB: nids
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
@@ -88,32 +90,6 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------------------------------
-  # NATS → ClickHouse bridge (stateless, scale horizontally if needed)
-  bridge:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.collector
-    container_name: nids-bridge
-    command: ["nats-ch-bridge"]
-    environment:
-      NATS_URL:            "nats://nats:4222"
-      NATS_SUBJECT:        "nids.flows"
-      NATS_QUEUE_GROUP:    "ch-bridge"
-      CLICKHOUSE_HOST:     "clickhouse"
-      CLICKHOUSE_PORT:     "8123"
-      CLICKHOUSE_USER:     "default"
-      CLICKHOUSE_PASSWORD: ""
-      BRIDGE_BATCH_SIZE:   "200"
-      BRIDGE_FLUSH_INTERVAL: "5"
-    depends_on:
-      nats:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    networks: [nids]
-    restart: unless-stopped
-
-  # -------------------------------------------------------------------------
   # NFStream collector — daemon
   #
   # PCAP mode (default):
@@ -126,20 +102,20 @@ services:
   collector:
     build:
       context: .
-      dockerfile: infra/docker/Dockerfile.collector
+      dockerfile: services/agent/Dockerfile
     container_name: nids-collector
     # The entrypoint reads the PCAP_FILE / CAPTURE_IFACE env vars set at
     # docker compose time and passes them as CLI flags.
     entrypoint: >
       /bin/sh -c '
         set -e
-        CMD="nfstream-collector --config /app/config/nfstream_agent.yaml --nats-url nats://nats:4222"
+        CMD="nids-collector --config /app/config/config.yaml --nats-url nats://nats:4222"
         [ -n "$$PCAP_FILE" ]      && CMD="$$CMD --pcap $$PCAP_FILE"
         [ -n "$$CAPTURE_IFACE" ]  && CMD="$$CMD --interface $$CAPTURE_IFACE"
         exec $$CMD
       '
     volumes:
-      - ./agent/config:/app/config:ro
+      - ./services/agent/config:/app/config:ro
       # Mount a PCAP for offline analysis (must match PCAP_FILE env var):
       # - /path/to/traffic.pcap:/data/traffic.pcap:ro
     environment:

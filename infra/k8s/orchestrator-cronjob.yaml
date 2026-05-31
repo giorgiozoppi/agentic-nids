@@ -1,12 +1,12 @@
-# orchestrator-cronjob.yaml
-#
-# Runs the orchestrator every 5 minutes as a Kubernetes CronJob.
-# concurrencyPolicy: Forbid ensures that if a job is still running when the
-# next trigger fires, the new invocation is skipped rather than starting a
-# second concurrent job (avoids duplicate security event writes).
-#
-# The /state PVC persists the "last_processed_at" timestamp file between runs.
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator
+  namespace: nids
+
+---
+# Persistent volume for the cursor state file (last_processed_at).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -17,8 +17,16 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      storage: 128Mi
+
 ---
+# CronJob: fetch flows from ClickHouse, classify via gRPC, write results.
+# Runs every 5 minutes; concurrencyPolicy Forbid prevents overlapping runs.
+#
+# All config and secrets come from Vault via agent-pre-populate-only.
+# The "pre-populate-only" mode runs the Vault agent as an init container only
+# (not a persistent sidecar), which is essential for Jobs: without it the Vault
+# sidecar keeps the pod alive after the main container exits.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -30,7 +38,7 @@ spec:
   schedule: "*/5 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 5
+  failedJobsHistoryLimit:     5
   jobTemplate:
     spec:
       template:
@@ -38,46 +46,50 @@ spec:
           labels:
             app: orchestrator
           annotations:
-            # Vault agent sidecar injection
+            # ── Vault agent injection (init-only for Jobs) ──────────────────
             vault.hashicorp.com/agent-inject: "true"
-            vault.hashicorp.com/role: "nids"
-            # Inject ClickHouse credentials
-            vault.hashicorp.com/agent-inject-secret-clickhouse: "secret/nids/clickhouse"
-            vault.hashicorp.com/agent-inject-template-clickhouse: |
-              {{- with secret "secret/nids/clickhouse" -}}
-              {{ .Data.data.password }}
+            vault.hashicorp.com/role: "nids-orchestrator"
+
+            # Run the Vault agent as an init container only — no sidecar.
+            # This ensures the Job pod terminates once the main container exits.
+            vault.hashicorp.com/agent-pre-populate-only: "true"
+
+            # Render ALL orchestrator config as a sourceable env file.
+            vault.hashicorp.com/agent-inject-secret-orchestrator.env: "kv/data/nids/orchestrator"
+            vault.hashicorp.com/agent-inject-template-orchestrator.env: |
+              {{- with secret "kv/data/nids/orchestrator" -}}
+              export NIDS_CH_ADDR="{{ .Data.data.ch_addr }}"
+              export NIDS_CH_DB="{{ .Data.data.ch_db }}"
+              export NIDS_CH_USER="{{ .Data.data.ch_user }}"
+              export NIDS_CH_PASSWORD="{{ .Data.data.ch_password }}"
+              export NIDS_CLASSIFIER_ADDR="{{ .Data.data.classifier_addr }}"
+              export NIDS_BATCH_SIZE="{{ .Data.data.batch_size }}"
+              export NIDS_LIMIT="{{ .Data.data.limit }}"
+              export NIDS_STATE_DIR="{{ .Data.data.state_dir }}"
               {{- end }}
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: orchestrator
           containers:
             - name: orchestrator
-              image: nids/orchestrator:latest
+              image: ghcr.io/your-org/nids-orchestrator:latest
               imagePullPolicy: IfNotPresent
-              args:
-                - -state-dir=/state
-                - -ch-addr=clickhouse.nids.svc.cluster.local:9000
-                - -ch-db=nids
-                - -ch-user=nids_orchestrator
-                - -classifier-addr=classifier.nids.svc.cluster.local:50051
-                - -batch-size=256
-                - -limit=10000
-              env:
-                - name: CH_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: clickhouse-credentials
-                      key: password
-              # Override -ch-password via env is idiomatic; alternatively parse
-              # /vault/secrets/clickhouse at startup.
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # Source Vault-injected config + secrets.
+                  . /vault/secrets/orchestrator.env
+                  exec /orchestrator
               volumeMounts:
                 - name: state
                   mountPath: /state
               resources:
                 requests:
-                  cpu: "100m"
+                  cpu:    "100m"
                   memory: "128Mi"
                 limits:
-                  cpu: "500m"
+                  cpu:    "500m"
                   memory: "512Mi"
           volumes:
             - name: state

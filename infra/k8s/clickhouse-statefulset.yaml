@@ -26,7 +26,7 @@ spec:
       annotations:
         # ── Vault agent injection ───────────────────────────────────────────
         vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "nids"
+        vault.hashicorp.com/role: "nids-clickhouse"
 
         # Render ClickHouse credentials as a shell-sourceable env file.
         vault.hashicorp.com/agent-inject-secret-clickhouse.env: "kv/data/nids/clickhouse"

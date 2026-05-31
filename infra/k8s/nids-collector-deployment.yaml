@@ -12,46 +12,59 @@ metadata:
   name: nids-collector-config
   namespace: nids
 data:
-  # Non-sensitive defaults.  Secrets (NATS creds, ClickHouse password) are
+  # Non-sensitive defaults.  NATS URL / subject are overridden by env vars
   # injected by Vault agent into /vault/secrets/collector.env at runtime.
   config.yaml: |
+    nats:
+      url: "nats://nats.nids.svc.cluster.local:4222"
+      subject: "flows.raw"
+
     capture:
       interface: "eth0"
-      idle_timeout: 120
-      active_timeout: 1800
+      # Capture all IPv4/IPv6 traffic: TCP, UDP, ICMP, tunnelled protocols.
+      bpf_filter: null
+      snapshot_length: 65535
+      promiscuous_mode: true
       decode_tunnels: true
       n_dissections: 20
       statistical_analysis: true
       splt_analysis: 0
-      promiscuous_mode: true
-      snapshot_length: 1536
+      idle_timeout: 120
+      active_timeout: 1800
+
+    status:
+      port: 8080
 
 ---
+# DaemonSet: one collector pod per node for full cluster coverage.
+# hostNetwork + NET_ADMIN/NET_RAW give the container access to the host NIC.
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: nids-collector
   namespace: nids
   labels:
     app: nids-collector
+    k8s-app: nfstream-tracker
 spec:
-  # Run one replica per node using a DaemonSet in production (for live capture
-  # on every node).  Deployment is used here for simplicity.
-  replicas: 1
   selector:
     matchLabels:
-      app: nids-collector
+      name: nids-collector
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
+        name: nids-collector
         app: nids-collector
       annotations:
         # ── Vault agent injection ───────────────────────────────────────────
         vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "nids"
+        vault.hashicorp.com/role: "nids-collector"
 
-        # Render all collector secrets into a single env file that the
-        # entrypoint sources before starting the collector.
+        # Render collector secrets into an env file sourced at startup.
         vault.hashicorp.com/agent-inject-secret-collector.env: "kv/data/nids/collector"
         vault.hashicorp.com/agent-inject-template-collector.env: |
           {{- with secret "kv/data/nids/collector" -}}
@@ -59,7 +72,7 @@ spec:
           export NIDS_NATS_SUBJECT="{{ .Data.data.subject }}"
           {{- end }}
 
-        # Also inject NATS credentials separately (for rotation awareness).
+        # NATS credentials (injected separately to support rotation).
         vault.hashicorp.com/agent-inject-secret-nats.env: "kv/data/nids/nats"
         vault.hashicorp.com/agent-inject-template-nats.env: |
           {{- with secret "kv/data/nids/nats" -}}
@@ -67,32 +80,42 @@ spec:
           export NATS_PASSWORD="{{ .Data.data.password }}"
           {{- end }}
 
-        # Re-inject (SIGHUP) when secrets rotate in Vault.
+        # Send SIGHUP when secrets are rotated so the process can reload.
         vault.hashicorp.com/agent-inject-command-collector.env: "kill -HUP 1"
     spec:
       serviceAccountName: nids-collector
-      # Live packet capture requires NET_ADMIN + NET_RAW on the host network.
+      # Bind to the host network so the collector can capture traffic on the
+      # node's physical interfaces without veth indirection.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: collector
-          image: ghcr.io/your-org/nids-collector:latest   # replace with your image
+          image: ghcr.io/your-org/nids-collector:latest
+          imagePullPolicy: Always
           command:
             - /bin/sh
             - -c
             - |
-              # Source Vault-injected secrets.
-              . /vault/secrets/collector.env
-              . /vault/secrets/nats.env
+              # Source Vault-injected secrets (override config.yaml defaults).
+              [ -f /vault/secrets/collector.env ] && . /vault/secrets/collector.env
+              [ -f /vault/secrets/nats.env ]      && . /vault/secrets/nats.env
               exec nids-collector \
                 --config /etc/nids/config.yaml \
-                --nats-url "${NIDS_NATS_URL}" \
-                --subject  "${NIDS_NATS_SUBJECT}"
+                --nats-url  "${NIDS_NATS_URL:-nats://nats.nids.svc.cluster.local:4222}" \
+                --subject   "${NIDS_NATS_SUBJECT:-flows.raw}" \
+                --interface "${NETWORK_INTERFACE:-eth0}"
           env:
+            # Override the capture interface to match the node's primary NIC.
+            - name: NETWORK_INTERFACE
+              value: "eth0"
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          ports:
+            - name: http-state
+              containerPort: 8080
+              protocol: TCP
           volumeMounts:
             - name: config
               mountPath: /etc/nids
@@ -102,11 +125,51 @@ spec:
           resources:
             requests:
               cpu: "200m"
-              memory: "128Mi"
+              memory: "256Mi"
             limits:
-              cpu: "1"
+              cpu: "500m"
               memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-state
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http-state
+            initialDelaySeconds: 5
+            periodSeconds: 10
       volumes:
         - name: config
           configMap:
             name: nids-collector-config
+
+---
+# NodePort Service — exposes the HTTP state API on every node.
+# With hostNetwork: true the pod already owns port 8080 on the host, but a
+# Service makes the endpoint reachable via kube-proxy and provides a stable
+# DNS name inside the cluster.
+#
+# Access from outside the cluster:
+#   curl http://<node-ip>:30880/state
+#   curl http://<node-ip>:30880/health
+apiVersion: v1
+kind: Service
+metadata:
+  name: nids-collector-state
+  namespace: nids
+  labels:
+    app: nids-collector
+spec:
+  type: NodePort
+  selector:
+    name: nids-collector
+  ports:
+    - name: http-state
+      port: 8080
+      targetPort: http-state
+      nodePort: 30880
+      protocol: TCP

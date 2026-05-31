@@ -1,327 +1,267 @@
-# Agentic Network Intrusion Detection System (NIDS)
+# Agentic NIDS
 
-**AI-Powered Network Security with Explainable Machine Learning**
+**AI-Powered Network Intrusion Detection System**
 
-A modern, Python-based Network Intrusion Detection System using Google's Agent2Agent (A2A) Protocol, ONNX ML models, and explainable AI for real-time threat detection and analysis.
+A production-grade, cloud-native NIDS built on three microservices — a Python network-flow collector, a Rust ML classifier, and a Go orchestrator — connected via NATS and ClickHouse.
 
-## 🌟 Features
-
-- **🤖 Agent2Agent Protocol** - Google's A2A protocol with gRPC streaming
-- **🧠 ML-Powered Detection** - ONNX models for attack classification
-- **📊 Real-time Dashboard** - Vue.js security monitoring UI
-- **🔍 Explainable AI** - Feature importance and human-readable explanations
-- **⚙️ Configurable** - YAML-based configuration (3-minute collection intervals)
-- **☸️ Kubernetes Ready** - Production-grade Helm charts
-- **🔄 Auto-scaling** - HPA for classifier and UI components
-
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Network
-        A[Traffic Capture]
+flowchart TB
+    subgraph Ingestion
+        Traffic([Network traffic
+live or PCAP])
+        Collector["Collector
+Python · nDPI
+HTTP :8080"]
+        NATS["NATS
+subject: flows.raw
+MsgPack"]
+        CH["ClickHouse
+flows_nats → flows
+classified_flows
+security_events
+classifier_alarms"]
+
+        Traffic -->|packets| Collector
+        Collector -->|MsgPack per flow| NATS
+        NATS -->|NATS engine
+materialized view| CH
     end
-    subgraph Python Agents
-        B[nDPI Collector Agent]
-        C[Classifier Agent]
+
+    subgraph Classification ["Classification  (CronJob, every 5 min)"]
+        Orch["Orchestrator
+Go
+cursor pagination"]
+        Clf["Classifier
+Rust · gRPC :50051
+Dummy / XGBoost ONNX"]
+
+        CH -->|FetchFlows| Orch
+        Orch -->|ClassifyBatch| Clf
+        Clf -->|probabilities| Orch
+        Orch -->|write results| CH
     end
-    subgraph ML & AI
-        D[ONNX Models]
-        E[Anomaly Detection]
-        F[Risk Assessment]
+
+    subgraph ConvAI ["Conversational AI  (Kubernetes only)"]
+        Agent["Ambient Agent
+Python · LangGraph
+polls events · RAG analysis"]
+        Chatbot["UI Chatbot
+Python · FastAPI
+natural-language Q&A"]
+        vLLM_DS["vLLM
+DeepSeek-R1/V3
+GPU :8000"]
+        vLLM_G4["vLLM
+Gemma 4 27B
+GPU :8000"]
+        Search["Search Service
+Rust · Axum :8080
+/search/kb  /search/traffic"]
+        Milvus["Milvus
+nids_flows
+(RAG store)"]
+
+        Agent -->|reasoning| vLLM_DS
+        Chatbot -->|generation| vLLM_G4
+        Agent -->|retrieve + store| Search
+        Chatbot -->|retrieve| Search
+        Search -->|ANN search| Milvus
+        Search -->|OLAP DSL → SQL| CH
     end
-    subgraph UI
-        G[Vue.js Dashboard]
-    end
-
-    A -->|Packets| B
-    B -->|A2A Protocol/gRPC| C
-    C --> D
-    C --> E
-    C --> F
-    C -->|Results| G
 ```
 
-## 📋 Prerequisites
+ClickHouse consumes from NATS directly using its built-in **NATS table engine** — no separate bridge process is needed. The Conversational AI layer (vLLM, Milvus, agent, chatbot) is Kubernetes-only and not included in the local Docker Compose stack.
 
-- **Python 3.11+** - For ML/AI agents
-- **uv** - Python package manager (or pip)
-- **Docker** - For containerization (optional)
-- **Kubernetes** - For production deployment (optional)
-- **Node.js 18+** - For UI development (optional)
+## Services
 
-## 🚀 Quick Start
+| Service | Language | Role |
+|---------|----------|------|
+| `services/agent` | Python 3.12 | NFStream/nDPI collector; publishes flows to NATS as MsgPack |
+| `services/classifier` | Rust | gRPC server; DummyClassifier or XGBoost/ONNX backend |
+| `services/orchestrator` | Go | CronJob; reads ClickHouse, batches flows to classifier, writes results |
+| `services/ai_agent` | Python 3.12 | LangGraph ambient agent; RAG analysis of security events via DeepSeek |
+| `services/chatbot` | Python 3.12 | FastAPI chatbot; natural-language Q&A over security data via Gemma 4 |
+| `services/search` | Rust | Search gateway: `POST /search/kb` (Milvus RAG), `POST /search/traffic` (ClickHouse SQL) |
 
-### 1. Install Dependencies
+## Quick Start
+
+**Prerequisites:** Docker, Docker Compose
+
+### Offline (PCAP file)
 
 ```bash
-cd agent
-uv pip install -e ".[all]"
-
-# Or with pip
-pip install -e ".[all]"
+PCAP_FILE=/path/to/traffic.pcap docker compose up
 ```
 
-### 2. Run Quick Test
+### Live capture (requires root / NET_RAW)
 
 ```bash
-# Test with synthetic data
-python main.py --mode test
+CAPTURE_IFACE=eth0 docker compose up
+# Uncomment cap_add and network_mode in docker-compose.yml first
 ```
 
-### 3. Analyze PCAP File
+Services started:
+
+| Service | URL |
+|---------|-----|
+| NATS broker | `nats://localhost:4222` |
+| NATS monitoring | http://localhost:8222 |
+| ClickHouse HTTP | http://localhost:8123 |
+| ch-ui dashboard | http://localhost:5521 |
+| Collector state API | http://localhost:8080/state |
+
+Connect ch-ui to `http://clickhouse:8123`, user `default`, password empty.
+
+## Build
 
 ```bash
-# Process a PCAP file
-python main.py --mode pcap --pcap /path/to/traffic.pcap --interval 60
+# Generate proto stubs (required before building orchestrator/classifier)
+make proto
+
+# Build all services
+make build
+
+# Run services locally
+make run-classifier     # Rust gRPC server on :50051
+make run-orchestrator   # Go batch processor (one run)
+
+# Tests
+make test               # all services
+make test-e2e           # orchestrator ↔ classifier gRPC end-to-end
+
+# Docker images
+make docker-build
 ```
 
-### 4. Live Capture
+See `make help` for all targets.
 
-```bash
-# Capture live traffic (requires sudo)
-sudo python main.py --mode live --interface eth0 --interval 180
-```
+## Configuration
 
-## 📊 System Components
-
-### 1. **Classifier Agent** (A2A Server)
-
-Receives flows and performs ML-based classification:
-
-```bash
-# Run standalone classifier
-python main.py --mode classifier --port 50051
-```
-
-**Features:**
-- ONNX model inference
-- Attack type detection (DoS, DDoS, port scan, malware, etc.)
-- Anomaly detection
-- Risk scoring (0-1 scale)
-- Explainable AI with feature importance
-
-### 2. **nDPI Collector Agent** (A2A Client)
-
-Collects network flows and sends to classifier:
-
-```bash
-# Run standalone collector
-python main.py --mode collector --config config/ndpi_agent.yaml
-```
-
-**Features:**
-- Packet capture (live/PCAP)
-- Flow aggregation (configurable interval)
-- nDPI protocol detection
-- Batch processing
-- Alert management
-
-### 3. **Security Dashboard** (Vue.js UI)
-
-Real-time threat visualization:
-
-```bash
-cd agent/ui
-npm install
-npm run dev
-```
-
-**Features:**
-- Real-time threat alerts
-- Risk level visualization
-- Threat details and explanations
-- Recommended actions
-- Filter by risk level
-
-## ⚙️ Configuration
-
-### YAML Configuration
-
-Edit `agent/config/ndpi_agent.yaml`:
+### Collector (`services/agent/config/config.yaml`)
 
 ```yaml
-# Collection interval (seconds)
-collection_interval: 180  # 3 minutes
+nats:
+  url: "nats://localhost:4222"
+  subject: "flows.raw"
 
-# Classifier connection
-classifier_agent_url: "grpc://localhost:50051"
+capture:
+  interface: null       # live interface (e.g. eth0), requires root
+  pcap_file: null       # offline PCAP path
+  statistical_analysis: true   # packet size + IAT stats (required by classifier)
+  idle_timeout: 120
+  active_timeout: 1800
 
-# Alert settings
-alert_threshold: 0.7  # Risk score 0-1
-auto_block: false     # Enable auto-blocking
-
-# Processing
-batch_size: 100
-max_concurrent_requests: 10
+status:
+  port: 8080            # HTTP state API
 ```
 
-### Pre-configured Templates
-
-- **`config/ndpi_agent.yaml`** - Default configuration
-- **`config/ndpi_agent_live.yaml`** - Live capture optimized
-- **`config/ndpi_agent_pcap.yaml`** - PCAP analysis optimized
-
-## 🐳 Docker Deployment
-
-Build Docker images:
+CLI flags override config values:
 
 ```bash
-# Classifier
-docker build -t jozoppi/classifier:1.0 -f docker/Dockerfile.classifier .
-
-# Collector
-docker build -t jozoppi/ndpi-collector:1.0 -f docker/Dockerfile.collector .
-
-# UI
-docker build -t jozoppi/nids-ui:1.0 -f docker/Dockerfile.ui ./agent/ui
+nids-collector --interface eth0 --nats-url nats://localhost:4222
+nids-collector --pcap traffic.pcap
+nids-collector --daemon --pid-file /var/run/nids.pid
+nids-collector --list-interfaces
 ```
 
-## ☸️ Kubernetes Deployment
+### Classifier
 
-Deploy to Kubernetes cluster:
+| Flag / Env | Default | Description |
+|------------|---------|-------------|
+| `--addr` | `0.0.0.0:50051` | gRPC listen address |
+| `--classifier-type` / `NIDS_CLASSIFIER_TYPE` | `dummy` | `dummy` or `xgboost` |
+| `--model` / `NIDS_MODEL_PATH` | — | Path to `.onnx` model (xgboost mode) |
+| `--labels` / `NIDS_CLASSIFIER_LABELS` | `BENIGN,DoS,DDoS,PortScan,BruteForce,WebAttack,Botnet,Malware` | Comma-separated class names |
+| `--ch-url` / `NIDS_CH_URL` | — | ClickHouse HTTP URL (enables `classifier_alarms` writes) |
+
+### Orchestrator
+
+| Flag / Env | Default | Description |
+|------------|---------|-------------|
+| `--ch-addr` / `NIDS_CH_ADDR` | `clickhouse.nids.svc.cluster.local:9000` | ClickHouse TCP address |
+| `--classifier-addr` / `NIDS_CLASSIFIER_ADDR` | `classifier.nids.svc.cluster.local:50051` | Classifier gRPC address |
+| `--batch-size` / `NIDS_BATCH_SIZE` | `256` | Flows per gRPC call |
+| `--limit` / `NIDS_LIMIT` | `1000` | Max flows per orchestrator run |
+| `--state-dir` / `NIDS_STATE_DIR` | `/state` | Directory for cursor persistence |
+
+## Deployment
+
+### Kubernetes (Kustomize)
 
 ```bash
-cd infra/helm
+kubectl apply -k infra/k8s/
+```
 
-# Install Helm chart
-helm install agentic-nids ./agentic-nids \
+### Kubernetes (Helm)
+
+```bash
+helm install agentic-nids infra/helm/agentic-nids \
   --namespace nids \
   --create-namespace
-
-# Access UI
-kubectl get svc agentic-nids-ui -n nids
 ```
 
-**Services Exposed:**
-- **UI**: LoadBalancer on port 80 (accessible externally)
-- **Classifier**: ClusterIP on port 50051 (internal gRPC)
-- **Collector**: ClusterIP on port 8000 (internal)
-
-See [infra/README.md](infra/README.md) for detailed deployment guide.
-
-## 📖 Documentation
-
-- **[Agent README](agent/README.md)** - Classifier agent details
-- **[nDPI Integration](agent/NDPI_INTEGRATION.md)** - Collector agent guide
-- **[Kubernetes Deployment](infra/README.md)** - Infrastructure guide
-
-## 🧪 Testing
-
-### Test Modes
+### Observability (Grafana + Promtail)
 
 ```bash
-# Quick synthetic test
-python main.py --mode test
-
-# PCAP analysis
-python main.py --mode pcap --pcap data/sample.pcap
-
-# Live capture
-sudo python main.py --mode live --interface eth0
+make obs-install
 ```
 
-## 🎯 Use Cases
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full component reference and [infra/k8s/](infra/k8s/) for Kubernetes manifests.
 
-1. **Network Monitoring** - Real-time threat detection
-2. **PCAP Analysis** - Offline traffic analysis
-3. **Security Research** - ML model evaluation
-4. **Incident Response** - Threat investigation
-5. **Compliance** - Security audit trails
+## ClickHouse Tables
 
-## 📊 Attack Types Detected
+| Table | Content | TTL |
+|-------|---------|-----|
+| `nids.flows` | All collected network flows | 90 days |
+| `nids.classified_flows` | Flows augmented with classifier output (BENIGN + threats) | 30 days |
+| `nids.security_events` | Threat-only events for alerting | — |
+| `nids.classifier_alarms` | Raw per-flow audit log from the classifier | 30 days |
 
-- **DoS/DDoS** - Denial of Service attacks
-- **Port Scan** - Network reconnaissance
-- **Brute Force** - Authentication attacks
-- **Malware** - C&C communication
-- **Botnet** - Coordinated attacks
-- **SQL Injection** - Database attacks
-- **XSS** - Cross-site scripting
-- **Probe** - Network mapping
+## gRPC API
 
-## 🔬 ML Models
+Proto definition: `proto/classifier.proto`
 
-The system uses ONNX format for ML models:
-
-- **Primary Model**: Flow classifier (XGBoost/Random Forest)
-- **Anomaly Detection**: Isolation Forest
-- **Risk Assessment**: Ensemble scoring
-
-### Training Custom Models
-
-See `agent/README.md` for model training guide.
-
-## 🔧 Development
-
-### Project Structure
-
-```
-agentic-nids/
-├── agent/                      # Python agents
-│   ├── classifier_agent_a2a.py # Classifier (A2A server)
-│   ├── ndpi_collector_agent.py # Collector (A2A client)
-│   ├── main.py                 # Main entry point
-│   ├── config/                 # YAML configurations
-│   ├── ui/                     # Vue.js dashboard
-│   └── pyproject.toml          # Python dependencies
-├── infra/                      # Kubernetes infrastructure
-│   └── helm/                   # Helm charts
-│       └── agentic-nids/
-├── nDPI/                       # nDPI library (submodule)
-└── README.md                   # This file
+```protobuf
+service ClassifierService {
+  rpc ClassifyBatch(ClassifyBatchRequest) returns (ClassifyBatchResponse);
+}
 ```
 
-### Contributing
+Input: 28-field `FlowFeatures` (IPs, ports, protocol, packet/byte counts, timing stats, TCP flags).
+Output: `ClassifyResponse` with `label`, `confidence`, and per-class `probabilities`.
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
+## ONNX / XGBoost Backend
 
-## 🔐 Security
+Build the classifier with the `xgboost` feature to enable ONNX inference:
 
-- Network policies enabled by default
-- Pod security contexts
-- Read-only root filesystem
-- Non-root user execution
-- TLS/HTTPS support
+```bash
+cargo build --release --features xgboost
+```
 
-## 📚 References
+Requires an ONNX model accepting a `[N, 22]` float32 input matrix (the 22 statistical features listed in `ARCHITECTURE.md`). Point to it with `--model path/to/model.onnx`.
 
-**Research Papers:**
-- [Large Language Models for Network Intrusion Detection](https://arxiv.org/html/2507.04752v1)
-- [Explainable Network Intrusion Detection using LLMs](https://arxiv.org/html/2408.04342v1)
-- [ChatIDS: Explainable Cybersecurity](https://arxiv.org/abs/2306.14504)
+## CI/CD
 
-**Technologies:**
-- [Google A2A Protocol](https://a2a-protocol.org/)
-- [ONNX Runtime](https://onnxruntime.ai/)
-- [nDPI - Deep Packet Inspection](https://www.ntop.org/products/deep-packet-inspection/ndpi/)
-- [Vue.js](https://vuejs.org/)
+GitHub Actions (`.github/workflows/`):
 
-## 📝 License
+- **CI** — path-filtered jobs per service: lint, test, Docker build. E2E gRPC test when orchestrator or classifier changes.
+- **CD** — builds and pushes images to GHCR on every `main` push; deploys to Linode LKE on tags matching `*+k8s`.
 
-MIT License - See [LICENSE](LICENSE) file for details
+## Attack Classes Detected
 
-## 👥 Authors
+`BENIGN` · `DoS` · `DDoS` · `PortScan` · `BruteForce` · `WebAttack` · `Botnet` · `Malware`
 
-**Agentic NIDS Team**
+Labels are configurable via `NIDS_CLASSIFIER_LABELS`.
 
-## 🙏 Acknowledgments
+## Test Data
 
-- nDPI team for deep packet inspection library
-- Google for A2A Protocol
-- ONNX Runtime team
-- Open source ML/security community
+Pre-recorded PCAP files in `data/`:
+`java_rmi`, `hydra_ftp`, `0day`, `smtp`, `mirai`, `zeus`, `blackEnergy`, `normal`, `normal2`, and more.
 
-## 📞 Support
+Honeypot environment with attacker/victim containers: `honeypot/`.
 
-- **Issues**: [GitHub Issues](https://github.com/your-org/agentic-nids/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/agentic-nids/discussions)
-- **Documentation**: [Full Docs](https://docs.example.com/agentic-nids)
+## License
 
----
-
-**Built with ❤️ for Network Security**
+MIT — see [LICENSE](LICENSE).

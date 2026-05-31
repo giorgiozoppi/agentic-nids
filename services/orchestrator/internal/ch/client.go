@@ -42,6 +42,27 @@ type Flow struct {
 	BidirectionalFinPackets   uint32
 }
 
+// ClassifiedFlow is written to nids.classified_flows for every flow that was
+// sent through the classifier, regardless of the resulting label.
+// This is the "augmented" record: original flow data + classifier findings.
+type ClassifiedFlow struct {
+	FlowID                  string
+	SrcIP, DstIP            string
+	SrcPort, DstPort        uint16
+	Protocol                uint8
+	CollectedAt             time.Time
+	BidirectionalDurationMs uint64
+	BidirectionalPackets    uint32
+	BidirectionalBytes      uint64
+	PacketsPerSecond        float64
+	BytesPerSecond          float64
+	// Classifier output
+	Label         string  // e.g. "BENIGN", "DoS", "PortScan"
+	Confidence    float32 // 0–1
+	Probabilities string  // JSON: {"BENIGN":0.12,"DoS":0.88,...}
+	IsThreat      uint8   // 0 = BENIGN, 1 = any threat label
+}
+
 // SecurityEvent represents one row to insert into nids.security_events.
 type SecurityEvent struct {
 	FlowID                  string
@@ -126,6 +147,41 @@ func (c *Client) FetchFlows(ctx context.Context, since time.Time, limit int) ([]
 		return nil, fmt.Errorf("iterate flow rows: %w", err)
 	}
 	return flows, nil
+}
+
+// InsertClassifiedFlows bulk-inserts every classified flow into
+// nids.classified_flows, including BENIGN flows.
+func (c *Client) InsertClassifiedFlows(ctx context.Context, rows []ClassifiedFlow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	batch, err := c.conn.PrepareBatch(ctx,
+		`INSERT INTO nids.classified_flows
+		 (flow_id, src_ip, dst_ip, src_port, dst_port, protocol, collected_at,
+		  bidirectional_duration_ms, bidirectional_packets, bidirectional_bytes,
+		  packets_per_second, bytes_per_second,
+		  label, confidence, probabilities, is_threat)
+		 VALUES`)
+	if err != nil {
+		return fmt.Errorf("prepare classified_flows batch: %w", err)
+	}
+
+	for _, r := range rows {
+		if err := batch.Append(
+			r.FlowID, r.SrcIP, r.DstIP, r.SrcPort, r.DstPort, r.Protocol, r.CollectedAt,
+			r.BidirectionalDurationMs, r.BidirectionalPackets, r.BidirectionalBytes,
+			r.PacketsPerSecond, r.BytesPerSecond,
+			r.Label, r.Confidence, r.Probabilities, r.IsThreat,
+		); err != nil {
+			return fmt.Errorf("append classified flow %s: %w", r.FlowID, err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("send classified_flows batch: %w", err)
+	}
+	return nil
 }
 
 // InsertSecurityEvents bulk-inserts security events using a prepared batch.

@@ -20,7 +20,22 @@
       "Bash(sudo -n true:*)",
       "Bash(git reset:*)",
       "Bash(git commit:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(uv run *)",
+      "Bash(go version *)",
+      "Bash(rustc --version)",
+      "Bash(docker version *)",
+      "Bash(cargo build *)",
+      "Bash(PROTO_DIR=/home/user/projects/agentic-nids/proto cargo build --release)",
+      "Bash(curl -fsSL https://go.dev/dl/go1.22.10.linux-amd64.tar.gz -o /tmp/go.tar.gz)",
+      "Bash(tar -C ~/.local -xzf /tmp/go.tar.gz)",
+      "Bash(~/.local/go/bin/go version *)",
+      "Bash(echo \"Go installed: $\\(~/.local/go/bin/go version\\)\")",
+      "Bash(dpkg -l libssl-dev)",
+      "Bash(pkg-config --libs openssl)",
+      "Read(//usr/include/openssl/**)",
+      "Bash(OPENSSL_VENDORED=1 PROTO_DIR=/home/user/projects/agentic-nids/proto cargo test)",
+      "Bash(PROTO_DIR=/home/user/projects/agentic-nids/proto cargo tree)"
     ]
   }
 }

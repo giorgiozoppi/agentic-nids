@@ -1,30 +1,37 @@
-# classifier-deployment.yaml
-#
-# NOTE: The ONNX model file cannot be stored in a ConfigMap (10 MiB limit).
-# Provision the /models PVC below and populate it by one of:
-#   a) An init-container that downloads the model from object storage (S3/GCS/MinIO).
-#   b) A separate Kubernetes Job that writes the model file to the PVC.
-# Example init-container snippet:
-#   initContainers:
-#   - name: model-downloader
-#     image: amazon/aws-cli:latest
-#     command: ["aws","s3","cp","s3://my-bucket/classifier.onnx","/models/classifier.onnx"]
-#     volumeMounts:
-#     - name: models
-#       mountPath: /models
-#
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: ServiceAccount
 metadata:
-  name: classifier-models
+  name: classifier
   namespace: nids
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+
+---
+# Non-secret classifier configuration.
+# NIDS_CLASSIFIER_LABELS  — labels the classifier recognises (must match training data order)
+# NIDS_CLASSIFIER_TYPE    — "dummy" (random labels, no model) or "xgboost" (ONNX model)
+# Secrets (ClickHouse password, model path) come from Vault.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: classifier-config
+  namespace: nids
+data:
+  # ── Classifier behaviour ─────────────────────────────────────────────────
+  # Labels must match the training data class order exactly.
+  NIDS_CLASSIFIER_LABELS: "BENIGN,DoS,DDoS,PortScan,BruteForce,WebAttack,Botnet,Malware"
+
+  # Backend: "dummy" (random labels, no model) or "xgboost" (ONNX model).
+  # Switch to "xgboost" and set NIDS_MODEL_PATH once a trained model is ready.
+  NIDS_CLASSIFIER_TYPE:   "dummy"
+
+  # OnnxRuntime execution provider: "cpu" (default) or "cuda".
+  # "cuda" requires a GPU node and CUDA libraries present in the image.
+  NIDS_ORT_EP:            "cpu"
+
+  # Memory reserved per request by k8s (see resources.requests below).
+  # Increase to 4Gi for xgboost/ONNX inference under production load.
+  # This value is informational — the actual limit is in the Deployment spec.
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -43,45 +50,80 @@ spec:
       labels:
         app: classifier
       annotations:
-        # Vault agent sidecar injection — secrets are written to /vault/secrets/
+        # ── Vault agent injection ─────────────────────────────────────────────
         vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "nids"
-        # Example: inject a secret as an env-file
-        vault.hashicorp.com/agent-inject-secret-config: "secret/nids/classifier"
-        vault.hashicorp.com/agent-inject-template-config: |
-          {{- with secret "secret/nids/classifier" -}}
-          export CLASSIFIER_SECRET={{ .Data.data.secret }}
+        vault.hashicorp.com/role: "nids-classifier"
+
+        # Render ClickHouse credentials as a sourceable env file.
+        vault.hashicorp.com/agent-inject-secret-ch.env: "kv/data/nids/classifier"
+        vault.hashicorp.com/agent-inject-template-ch.env: |
+          {{- with secret "kv/data/nids/classifier" -}}
+          export NIDS_CH_URL="{{ .Data.data.ch_url }}"
+          export NIDS_CH_DB="{{ .Data.data.ch_db }}"
+          export NIDS_CH_USER="{{ .Data.data.ch_user }}"
+          export NIDS_CH_PASSWORD="{{ .Data.data.ch_password }}"
           {{- end }}
+
+        # Re-exec when secrets rotate (SIGHUP → process reload).
+        vault.hashicorp.com/agent-inject-command-ch.env: "kill -HUP 1"
     spec:
+      serviceAccountName: classifier
       containers:
         - name: classifier
-          image: nids/classifier:latest
-          imagePullPolicy: IfNotPresent
-          args:
-            - -addr=:50051
-            - -model=/models/classifier.onnx
-            - -ort-lib=/usr/lib/libonnxruntime.so
-            - -input-name=float_input
-            - -output-name=probabilities
+          image: ghcr.io/your-org/nids-classifier:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Source Vault-injected ClickHouse credentials.
+              [ -f /vault/secrets/ch.env ] && . /vault/secrets/ch.env
+
+              # Select classifier implementation based on ConfigMap value.
+              if [ "${NIDS_CLASSIFIER_TYPE:-dummy}" = "xgboost" ]; then
+                exec /classifier \
+                  --addr 0.0.0.0:50051 \
+                  --labels "${NIDS_CLASSIFIER_LABELS}" \
+                  --classifier-type xgboost \
+                  --model /models/classifier.onnx \
+                  --ch-url   "${NIDS_CH_URL:-}" \
+                  --ch-db    "${NIDS_CH_DB:-nids}" \
+                  --ch-user  "${NIDS_CH_USER:-default}" \
+                  --ch-password "${NIDS_CH_PASSWORD:-}"
+              else
+                exec /classifier \
+                  --addr 0.0.0.0:50051 \
+                  --labels "${NIDS_CLASSIFIER_LABELS}" \
+                  --classifier-type dummy \
+                  --ch-url   "${NIDS_CH_URL:-}" \
+                  --ch-db    "${NIDS_CH_DB:-nids}" \
+                  --ch-user  "${NIDS_CH_USER:-default}" \
+                  --ch-password "${NIDS_CH_PASSWORD:-}"
+              fi
+          # ConfigMap provides non-secret config.
+          envFrom:
+            - configMapRef:
+                name: classifier-config
           ports:
             - name: grpc
               containerPort: 50051
               protocol: TCP
+          # /models is only needed for xgboost; safe to mount even in dummy mode.
           volumeMounts:
             - name: models
               mountPath: /models
               readOnly: true
           resources:
             requests:
-              cpu: "500m"
-              memory: "512Mi"
+              cpu:    "500m"
+              memory: "1Gi"   # 1 Gi reserved per instance as required
             limits:
-              cpu: "2"
-              memory: "2Gi"
+              cpu:    "2"
+              memory: "4Gi"   # headroom for xgboost/ONNX inference
           livenessProbe:
             grpc:
               port: 50051
-            initialDelaySeconds: 15
+            initialDelaySeconds: 10
             periodSeconds: 20
           readinessProbe:
             grpc:
@@ -90,8 +132,10 @@ spec:
             periodSeconds: 10
       volumes:
         - name: models
-          persistentVolumeClaim:
-            claimName: classifier-models
+          # Use an emptyDir in dummy mode; replace with a PVC containing the
+          # ONNX model for xgboost mode.
+          emptyDir: {}
+
 ---
 apiVersion: v1
 kind: Service

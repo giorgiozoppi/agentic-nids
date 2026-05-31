@@ -25,7 +25,7 @@ spec:
       annotations:
         # ── Vault agent injection ───────────────────────────────────────────
         vault.hashicorp.com/agent-inject: "true"
-        vault.hashicorp.com/role: "nids"
+        vault.hashicorp.com/role: "nids-nats"
 
         # Render NATS credentials into /vault/secrets/nats.conf
         # The file is picked up by the nats-server via -config flag below.

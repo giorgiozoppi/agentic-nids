@@ -1,15 +1,40 @@
-FROM golang:1.22-bookworm AS builder
-WORKDIR /src
-COPY . .
-RUN go mod tidy && CGO_ENABLED=1 go build -o /classifier ./classifier/cmd
+FROM rust:1.81-bookworm AS builder
+
+# protoc  — tonic-build needs it to compile the .proto file.
+# libssl-dev — needed by openssl-sys when building with --features xgboost
+#              (ort-sys pulls ureq → native-tls → openssl).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        protobuf-compiler \
+        libssl-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY proto proto
+COPY services/classifier services/classifier
+
+WORKDIR /build/services/classifier
+
+# Cache dep compilation before copying src (layer reused when only src changes).
+RUN cargo fetch
+
+# PROTO_DIR  — location of the shared .proto file (used by build.rs).
+# BUILD_FEATURES — pass "--features xgboost" via docker build --build-arg to
+#                  enable ONNX/OnnxRuntime inference.  Default: dummy only.
+ENV PROTO_DIR=/build/proto
+ARG BUILD_FEATURES=""
+
+RUN if [ -n "${BUILD_FEATURES}" ]; then \
+      cargo build --release --features "${BUILD_FEATURES}"; \
+    else \
+      cargo build --release; \
+    fi
 
 FROM debian:bookworm-slim
-ARG ORT_VERSION=1.18.1
-RUN apt-get update && apt-get install -y curl ca-certificates && \
-    curl -fsSL \
-      https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz \
-      | tar -xz -C /usr/lib --strip-components=2 --wildcards "*/lib/*.so*" && \
-    ldconfig && \
-    apt-get remove -y curl && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /classifier /classifier
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/services/classifier/target/release/classifier /classifier
 ENTRYPOINT ["/classifier"]

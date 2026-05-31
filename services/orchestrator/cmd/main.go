@@ -6,31 +6,83 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
-	"nids/services/orchestrator/internal/ch"
-	"nids/services/orchestrator/internal/grpcclient"
-	"nids/services/orchestrator/internal/state"
+	"nids/orchestrator/internal/ch"
+	"nids/orchestrator/internal/grpcclient"
+	"nids/orchestrator/internal/state"
 
-	// Run 'make proto' to generate this package
-	classifierv1 "nids/services/gen/classifierv1"
+	classifierv1 "nids/orchestrator/gen/classifierv1"
 )
 
+// defaultLabels must match the classifier's LABELS slice exactly.
+var defaultLabels = []string{
+	"BENIGN", "DoS", "DDoS", "PortScan", "BruteForce", "WebAttack", "Botnet", "Malware",
+}
+
+// envOr returns the env-var value when set, otherwise the provided default.
+// Env vars (set by the k8s ConfigMap) take precedence over compiled-in defaults
+// so the binary can be reconfigured without rebuilding.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envOrInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 func main() {
-	stateDir       := flag.String("state-dir",        "/state",                                         "directory for persisted state")
-	chAddr         := flag.String("ch-addr",          "clickhouse.nids.svc.cluster.local:9000",         "ClickHouse address (host:port)")
-	chDB           := flag.String("ch-db",            "nids",                                           "ClickHouse database name")
-	chUser         := flag.String("ch-user",          "default",                                        "ClickHouse username")
-	chPassword     := flag.String("ch-password",      "",                                               "ClickHouse password")
-	classifierAddr := flag.String("classifier-addr",  "classifier.nids.svc.cluster.local:50051",        "classifier gRPC address")
-	batchSize      := flag.Int("batch-size",          256,                                              "flows per gRPC batch call")
-	limit          := flag.Int("limit",               10000,                                            "maximum flows to process per run")
+	// ── Configuration ─────────────────────────────────────────────────────────
+	// Priority: CLI flag > NIDS_* env var (from ConfigMap/Secret) > default.
+	// In production the CronJob injects all values via envFrom + secretKeyRef;
+	// CLI flags are useful for local ad-hoc runs (e.g. make run-orchestrator).
+	stateDir := flag.String("state-dir",
+		envOr("NIDS_STATE_DIR", "/state"),
+		"directory for persisted cursor state")
+	chAddr := flag.String("ch-addr",
+		envOr("NIDS_CH_ADDR", "clickhouse.nids.svc.cluster.local:9000"),
+		"ClickHouse address (host:port)")
+	chDB := flag.String("ch-db",
+		envOr("NIDS_CH_DB", "nids"),
+		"ClickHouse database name")
+	chUser := flag.String("ch-user",
+		envOr("NIDS_CH_USER", "default"),
+		"ClickHouse username")
+	chPassword := flag.String("ch-password",
+		envOr("NIDS_CH_PASSWORD", ""),
+		"ClickHouse password (prefer NIDS_CH_PASSWORD env var from a Secret)")
+	classifierAddr := flag.String("classifier-addr",
+		envOr("NIDS_CLASSIFIER_ADDR", "classifier.nids.svc.cluster.local:50051"),
+		"classifier gRPC address")
+	batchSize := flag.Int("batch-size",
+		envOrInt("NIDS_BATCH_SIZE", 256),
+		"flows per gRPC batch call")
+	limit := flag.Int("limit",
+		envOrInt("NIDS_LIMIT", 1000),
+		"maximum flows to classify per run")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// ── 1. Load persisted timestamp ──────────────────────────────────────────
+	slog.Info("orchestrator starting",
+		"ch_addr", *chAddr,
+		"ch_db", *chDB,
+		"classifier_addr", *classifierAddr,
+		"limit", *limit,
+		"batch_size", *batchSize,
+	)
+
+	// ── 1. Load persisted cursor ──────────────────────────────────────────────
 	since, err := state.Load(*stateDir)
 	if err != nil {
 		slog.Error("load state", "error", err)
@@ -38,7 +90,7 @@ func main() {
 	}
 	slog.Info("state loaded", "since", since.Format(time.RFC3339))
 
-	// ── 2. Connect to ClickHouse ─────────────────────────────────────────────
+	// ── 2. Connect to ClickHouse ──────────────────────────────────────────────
 	chClient, err := ch.New(*chAddr, *chDB, *chUser, *chPassword)
 	if err != nil {
 		slog.Error("connect clickhouse", "error", err)
@@ -46,7 +98,7 @@ func main() {
 	}
 	defer chClient.Close()
 
-	// ── 3. Connect to classifier gRPC ────────────────────────────────────────
+	// ── 3. Connect to classifier gRPC ─────────────────────────────────────────
 	grpcClient, err := grpcclient.New(*classifierAddr)
 	if err != nil {
 		slog.Error("connect classifier", "error", err)
@@ -58,12 +110,13 @@ func main() {
 	startTime := time.Now()
 
 	var (
-		totalFlows  int
-		totalEvents int
-		cursor      = since
+		totalFlows      int
+		totalClassified int
+		totalThreats    int
+		cursor          = since
 	)
 
-	// ── 4. Paginate through flows ────────────────────────────────────────────
+	// ── 4. Paginate: fetch → classify → augment → write ───────────────────────
 	for totalFlows < *limit {
 		remaining := *limit - totalFlows
 		fetchN := *batchSize
@@ -77,67 +130,45 @@ func main() {
 			os.Exit(1)
 		}
 		if len(flows) == 0 {
-			slog.Info("no more flows", "total_processed", totalFlows)
+			slog.Info("no more flows to process", "total_processed", totalFlows)
 			break
 		}
 
-		// ── 5. Classify ──────────────────────────────────────────────────────
+		// ── 5. Ask the classifier to augment each flow ────────────────────────
 		results, err := grpcClient.ClassifyBatch(ctx, flows)
 		if err != nil {
 			slog.Error("classify batch", "error", err)
 			os.Exit(1)
 		}
 
-		// Build a flow_id → flow map for quick lookup.
-		flowByID := make(map[string]ch.Flow, len(flows))
-		for _, f := range flows {
-			flowByID[f.FlowID] = f
+		aug := augmentFlows(flows, results, defaultLabels)
+
+		// ── 6a. Write all augmented flows (including BENIGN) ──────────────────
+		if err := chClient.InsertClassifiedFlows(ctx, aug.ClassifiedFlows); err != nil {
+			slog.Error("insert classified flows", "error", err)
+			os.Exit(1)
 		}
 
-		// Build security events — skip BENIGN flows; store threats immediately
-		// upon receipt of the gRPC response.
-		events := make([]ch.SecurityEvent, 0, len(results))
-		for _, r := range results {
-			if r.Label == "BENIGN" {
-				continue
-			}
-			f, ok := flowByID[r.FlowId]
-			if !ok {
-				continue
-			}
-			events = append(events, ch.SecurityEvent{
-				FlowID:                  f.FlowID,
-				SrcIP:                   f.SrcIP,
-				DstIP:                   f.DstIP,
-				SrcPort:                 f.SrcPort,
-				DstPort:                 f.DstPort,
-				Protocol:                f.Protocol,
-				Label:                   r.Label,
-				Confidence:              r.Confidence,
-				Probabilities:           probabilitiesToJSON(r),
-				BidirectionalPackets:    f.BidirectionalPackets,
-				BidirectionalBytes:      f.BidirectionalBytes,
-				BidirectionalDurationMs: f.BidirectionalDurationMs,
-			})
-		}
-
-		// ── 6. Insert threat events immediately after classification ──────────
-		if err := chClient.InsertSecurityEvents(ctx, events); err != nil {
+		// ── 6b. Write threat events for alerting ──────────────────────────────
+		if err := chClient.InsertSecurityEvents(ctx, aug.SecurityEvents); err != nil {
 			slog.Error("insert security events", "error", err)
 			os.Exit(1)
 		}
-		for _, e := range events {
-			slog.Info("security event stored",
+
+		for _, e := range aug.SecurityEvents {
+			slog.Info("threat detected",
 				"flow_id", e.FlowID,
-				"src_ip", e.SrcIP,
-				"dst_ip", e.DstIP,
+				"src", e.SrcIP,
+				"dst", e.DstIP,
 				"attack", e.Label,
 				"confidence", e.Confidence,
 			)
 		}
-		totalEvents += len(events)
 
-		// ── 7. Advance cursor to max collected_at in this page ────────────────
+		totalClassified += len(aug.ClassifiedFlows)
+		totalThreats += len(aug.SecurityEvents)
+
+		// ── 7. Advance cursor ─────────────────────────────────────────────────
 		maxAt := flows[0].CollectedAt
 		for _, f := range flows[1:] {
 			if f.CollectedAt.After(maxAt) {
@@ -152,32 +183,25 @@ func main() {
 		}
 
 		totalFlows += len(flows)
-		slog.Info("page processed",
-			"flows", len(flows),
-			"events", len(events),
+		slog.Info("page done",
+			"flows_fetched", len(flows),
+			"classified", len(aug.ClassifiedFlows),
+			"threats", len(aug.SecurityEvents),
 			"cursor", cursor.Format(time.RFC3339Nano),
 		)
 
 		if len(flows) < fetchN {
-			// Last page — fewer rows than requested means we reached the end.
-			break
+			break // last page
 		}
 	}
 
 	// ── 8. Summary ────────────────────────────────────────────────────────────
 	slog.Info("orchestrator run complete",
-		"flows_processed", totalFlows,
-		"events_written",  totalEvents,
-		"duration",        time.Since(startTime).String(),
+		"flows_fetched", totalFlows,
+		"flows_classified", totalClassified,
+		"threats_written", totalThreats,
+		"duration", time.Since(startTime).String(),
 	)
-}
-
-// probabilitiesToJSON renders the probability slice in the response as a JSON
-// object using the canonical label order from the classifier defaults.
-// We embed the label names directly so the orchestrator does not need to import
-// the model package.
-var defaultLabels = []string{
-	"BENIGN", "DoS", "DDoS", "PortScan", "BruteForce", "WebAttack", "Botnet", "Malware",
 }
 
 func probabilitiesToJSON(r *classifierv1.ClassifyResponse) string {

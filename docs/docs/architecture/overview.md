@@ -7,41 +7,61 @@ sidebar_position: 1
 ## System diagram
 
 ```mermaid
-graph TB
-    subgraph "Capture layer"
-        NET[Network traffic]
-        COL[NFStream collector<br/>Python daemon]
-        NET --> COL
-    end
+flowchart TB
+    subgraph Ingestion ["Ingestion layer"]
+        NET([Network traffic\nlive or PCAP])
+        COL["NFStream Collector\nPython · nDPI\nHTTP :8080"]
+        NATS["NATS 2.x\nsubject: flows.raw\nMsgPack · JetStream"]
+        NATS_TBL["nids.flows_nats\nNATS engine table"]
+        MV(["materialized view"])
+        FLOWS["nids.flows\nMergeTree · 90-day TTL"]
 
-    subgraph "Transport layer"
-        NATS[NATS broker<br/>subject: flows.raw<br/>format: MsgPack]
-        COL -->|MsgPack publish| NATS
-    end
-
-    subgraph "Storage layer"
-        NATS_TBL[nids.flows_nats<br/>NATS engine table]
-        MV[Materialized view]
-        FLOWS[nids.flows<br/>MergeTree — 90-day TTL]
+        NET -->|packets| COL
+        COL -->|MsgPack per flow| NATS
         NATS -->|native subscribe| NATS_TBL
         NATS_TBL --> MV --> FLOWS
     end
 
-    subgraph "Classification layer"
-        ORCH[Orchestrator<br/>Go CronJob]
-        CLF[Classifier<br/>Go gRPC service]
-        SE[nids.security_events<br/>MergeTree]
+    subgraph Classification ["Classification layer  (CronJob · every 5 min)"]
+        ORCH["Orchestrator\nGo · cursor pagination"]
+        CLF["Classifier\nRust · gRPC :50051\nDummy or XGBoost/ONNX"]
+        CF["nids.classified_flows\n30-day TTL"]
+        SE["nids.security_events\nthreat-only"]
+        CA["nids.classifier_alarms\nraw audit log"]
+
         FLOWS -->|FetchFlows| ORCH
         ORCH -->|ClassifyBatch gRPC| CLF
-        CLF -->|probabilities| ORCH
-        ORCH -->|non-BENIGN events| SE
+        CLF -->|label · confidence| ORCH
+        CLF -->|write alarm| CA
+        ORCH -->|write all flows| CF
+        ORCH -->|write threats| SE
     end
 
-    style COL fill:#e1f5ff
-    style NATS fill:#fff9c4
-    style FLOWS fill:#e8f5e9
-    style CLF fill:#fff4e6
-    style SE fill:#ffebee
+    subgraph ConvAI ["Conversational AI  (Kubernetes only)"]
+        SEARCH["Search Service\nRust · Axum :8080\n/search/kb  /search/traffic\nCSP pools · QueryTranslator"]
+        AGENT["Ambient Agent\nPython · LangGraph\nDeepSeek reasoning"]
+        CHAT["UI Chatbot\nPython · FastAPI\nGemma 4 · SSE"]
+        VDS["vLLM DeepSeek-R1/V3\nGPU :8000"]
+        VG4["vLLM Gemma 4 27B\nGPU :8000"]
+        MILVUS["Milvus\nnids_flows\nRAG store"]
+        CONSUL["Consul KV\nnids/search/collections"]
+
+        AGENT -->|reasoning| VDS
+        CHAT -->|generation| VG4
+        AGENT --> SEARCH
+        CHAT --> SEARCH
+        SEARCH -->|ANN search| MILVUS
+        SEARCH -->|OLAP DSL → SQL| FLOWS
+        SEARCH -->|OLAP DSL → SQL| SE
+        SEARCH -.->|allowlist poll| CONSUL
+    end
+
+    style COL fill:#dbeafe
+    style NATS fill:#fef9c3
+    style FLOWS fill:#dcfce7
+    style CLF fill:#ffedd5
+    style SEARCH fill:#f3e8ff
+    style MILVUS fill:#fce7f3
 ```
 
 ## NFStream collector
@@ -68,15 +88,22 @@ nids.flows_nats  (ENGINE = NATS, nats_format = 'MsgPack')
 
 ## Classifier gRPC service {#classifier}
 
-**Technology**: Go 1.22 + ONNX Runtime (`github.com/microsoft/onnxruntime-go`)
+**Technology**: Rust + tonic (gRPC) + OnnxRuntime (`ort` crate)  
+**Source**: `services/classifier/`
 
-- Loads a pre-trained ONNX model at startup from `/models/classifier.onnx`.
-- Exposes a single RPC: `ClassifyBatch([]FlowFeatures) → []ClassifyResponse`.
-- Pre-allocates tensors for up to 256 flows per call; reshapes per actual batch size.
-- Returns for each flow:
+Two interchangeable backends selected via `--classifier-type` (or `NIDS_CLASSIFIER_TYPE`):
+
+- **`dummy`** (default) — deterministic pseudo-random labels; no model needed. Safe for development and integration testing.
+- **`xgboost`** — ONNX model inference via OnnxRuntime. Requires `cargo build --features xgboost` and `--model path/to/model.onnx`.
+
+The service exposes a single RPC: `ClassifyBatch([]FlowFeatures) → []ClassifyResponse`.
+
+Returns for each flow:
   - `label` — the predicted attack class (e.g. `"DoS"`, `"BENIGN"`)
   - `confidence` — probability of the predicted class
-  - `probabilities` — full 8-class probability vector
+  - `probabilities` — full per-class probability vector
+
+The classifier also optionally writes a raw audit row to `nids.classifier_alarms` for every classified flow (enabled when `NIDS_CH_URL` is set).
 
 ### Attack classes
 
@@ -94,13 +121,15 @@ nids.flows_nats  (ENGINE = NATS, nats_format = 'MsgPack')
 ## Orchestrator (CronJob)
 
 **Technology**: Go 1.22 + `github.com/ClickHouse/clickhouse-go/v2`  
+**Source**: `services/orchestrator/`  
 **Schedule**: every 5 minutes (`*/5 * * * *`), `concurrencyPolicy: Forbid`
 
 1. Loads a persisted RFC3339Nano timestamp from a PVC-backed `/state` directory (defaults to `now − 24 h` on first run).
-2. Paginates `nids.flows WHERE collected_at > cursor ORDER BY collected_at ASC LIMIT 256`.
+2. Paginates `nids.flows WHERE collected_at > cursor ORDER BY collected_at ASC LIMIT batch_size`.
 3. Sends each page to `ClassifyBatch`.
-4. **Immediately after the gRPC response arrives**, inserts all non-BENIGN results into `nids.security_events` and logs each stored event (`attack`, `confidence`).
-5. Advances the cursor to `max(collected_at)` of the page and saves state.
+4. Writes **all** classified flows (including BENIGN) to `nids.classified_flows`.
+5. Writes non-BENIGN results to `nids.security_events` and logs each threat.
+6. Advances the cursor to `max(collected_at)` of the page and saves state.
 
 ## Vault secret injection
 

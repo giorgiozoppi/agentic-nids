@@ -121,7 +121,7 @@ The classifier expects exactly **22 float32 features** in this order:
 
 ## gRPC messages
 
-Defined in `services/proto/classifier.proto`:
+Defined in `proto/classifier.proto`:
 
 ```protobuf
 message FlowFeatures {

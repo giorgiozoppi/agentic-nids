@@ -10,9 +10,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	// Run 'make proto' to generate this package
-	classifierv1 "nids/services/gen/classifierv1"
-	"nids/services/orchestrator/internal/ch"
+	classifierv1 "nids/orchestrator/gen/classifierv1"
+	"nids/orchestrator/internal/ch"
 )
 
 // Client wraps a gRPC connection to the classifier service.
@@ -52,6 +51,12 @@ func New(addr string) (*Client, error) {
 		conn: conn,
 		svc:  classifierv1.NewClassifierServiceClient(conn),
 	}, nil
+}
+
+// NewFromConn wraps an already-dialled connection. Used in tests to inject a
+// bufconn or other pre-configured transport.
+func NewFromConn(conn *grpc.ClientConn) *Client {
+	return &Client{conn: conn, svc: classifierv1.NewClassifierServiceClient(conn)}
 }
 
 // ClassifyBatch converts a slice of ch.Flow into FlowFeatures protos, calls
