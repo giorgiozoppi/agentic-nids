@@ -1,0 +1,34 @@
+nats:
+  url: "nats://localhost:4222"
+  subject: "flows.raw"
+
+capture:
+  interface: null         # e.g. eth0  (live capture, requires root)
+  pcap_file: null         # e.g. traffic.pcap  (offline analysis)
+
+  # No BPF restriction — capture all IPv4, IPv6, TCP, UDP, ICMP traffic.
+  # Set to e.g. "tcp or udp" to narrow scope.
+  bpf_filter: null
+
+  # Full packet snapshot so nDPI can inspect all layers (L2–L7).
+  snapshot_length: 65535
+
+  # Promiscuous mode sees all frames on the segment, not just unicast to us.
+  promiscuous_mode: true
+
+  # Decode encapsulated protocols: GRE, VXLAN, MPLS, IPsec-ESP, etc.
+  decode_tunnels: true
+
+  # nDPI dissection depth: 20 = full application-layer identification.
+  n_dissections: 20
+
+  # Per-packet size and inter-arrival-time statistics (required by classifier).
+  statistical_analysis: true
+  splt_analysis: 0        # early-classification packets (0 = disabled)
+
+  # Flow expiry
+  idle_timeout: 120       # seconds before an idle flow is exported
+  active_timeout: 1800    # maximum lifetime of any single flow
+
+status:
+  port: 8080              # FastAPI state API (GET /health, GET /state)

@@ -1,0 +1,130 @@
+# ── Loki ───────────────────────────────────────────────────────────────────
+# Single-binary (monolithic) mode — no object storage required.
+# For production, switch deploymentMode: SimpleScalable and configure S3/GCS.
+loki:
+  deploymentMode: SingleBinary
+
+  loki:
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+    auth_enabled: false
+    # Receive logs over the OTLP HTTP endpoint so Tempo can forward them.
+    server:
+      http_listen_port: 3100
+
+  singleBinary:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    persistence:
+      enabled: true
+      size: 10Gi
+      # Linode Block Storage storage class
+      storageClass: linode-block-storage-retain
+
+  gateway:
+    enabled: false
+
+  test:
+    enabled: false
+
+  monitoring:
+    selfMonitoring:
+      enabled: false
+    lokiCanary:
+      enabled: false
+
+# ── Tempo ───────────────────────────────────────────────────────────────────
+# Single-binary mode, local storage.  For production add an S3 backend.
+tempo:
+  replicas: 1
+
+  tempo:
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: linode-block-storage-retain
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+grafana:
+  replicas: 1
+
+  adminPassword: "changeme"   # override via --set or Vault secret
+
+  service:
+    type: LoadBalancer          # Linode NodeBalancer — gets a public IP
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: linode-block-storage-retain
+
+  # Pre-configure Loki and Tempo as datasources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Loki
+          type: loki
+          url: http://{{ .Release.Name }}-loki:3100
+          access: proxy
+          isDefault: false
+
+        - name: Tempo
+          type: tempo
+          url: http://{{ .Release.Name }}-tempo:3100
+          access: proxy
+          isDefault: false
+
+  # Pre-load the NIDS dashboards from the dashboards/ directory
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: nids
+          orgId: 1
+          folder: NIDS
+          type: file
+          disableDeletion: false
+          options:
+            path: /var/lib/grafana/dashboards/nids
+
+  dashboardsConfigMaps:
+    nids: nids-dashboards

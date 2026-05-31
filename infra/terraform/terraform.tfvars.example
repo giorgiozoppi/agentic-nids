@@ -1,0 +1,24 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars (it is in .gitignore).
+
+linode_token = "your-linode-api-token-here"
+
+region        = "eu-west"
+cluster_label = "agentic-nids"
+k8s_version   = "1.32"
+
+# Standard node pool (collector, orchestrator, classifier, NATS, chatbot, AI agent)
+standard_node_type  = "g6-standard-4"   # 4 vCPU, 8 GB RAM
+standard_node_count = 3
+standard_autoscale  = true
+standard_autoscale_min = 2
+standard_autoscale_max = 6
+
+# ClickHouse node pool (memory-optimised)
+clickhouse_node_type  = "g6-highmem-4"  # 4 vCPU, 24 GB RAM
+clickhouse_node_count = 1               # set to 3 for HA
+
+# GPU node pool for vLLM (requires GPU-enabled Linode account)
+enable_gpu_pool = false
+gpu_node_type   = "g1-gpu-rtx6000-1"   # RTX 6000, 24 GB VRAM
+gpu_node_count  = 2                    # one per vLLM deployment

@@ -1,0 +1,35 @@
+[package]
+name = "nids-classifier"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "classifier"
+path = "src/main.rs"
+
+# ── Features ──────────────────────────────────────────────────────────────────
+# Default build: dummy backend only (no ONNX deps, no OpenSSL).
+# Production build: cargo build --release --features xgboost
+[features]
+default = []
+xgboost = ["dep:ndarray", "dep:ort"]
+
+[dependencies]
+anyhow     = "1"
+clap       = { version = "4", features = ["derive", "env"] }
+clickhouse = { version = "0.13", features = [] }
+prost      = "0.13"
+serde      = { version = "1", features = ["derive"] }
+tokio      = { version = "1", features = ["full"] }
+tonic      = { version = "0.12", features = ["transport"] }
+tracing    = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+
+# Optional: only needed for the xgboost backend.
+# CPU-only: no CUDA/TensorRT EP.  load-dynamic keeps the binary portable
+# (libonnxruntime.so resolved at runtime via ORT_DYLIB_PATH env var).
+ndarray = { version = "0.16", optional = true }
+ort     = { version = "2.0.0-rc.12", features = ["load-dynamic", "copy-dylibs"], optional = true }
+
+[build-dependencies]
+tonic-build = "0.12"

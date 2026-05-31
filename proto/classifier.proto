@@ -1,0 +1,47 @@
+syntax = "proto3";
+package nids.classifier.v1;
+option go_package = "nids/orchestrator/gen/classifierv1;classifierv1";
+
+service ClassifierService {
+  rpc ClassifyBatch(ClassifyBatchRequest) returns (ClassifyBatchResponse);
+}
+
+message FlowFeatures {
+  string flow_id                       = 1;
+  string src_ip                        = 2;
+  string dst_ip                        = 3;
+  uint32 src_port                      = 4;
+  uint32 dst_port                      = 5;
+  uint32 protocol                      = 6;
+  uint64 bidirectional_duration_ms     = 7;
+  uint32 bidirectional_packets         = 8;
+  uint64 bidirectional_bytes           = 9;
+  uint32 src2dst_packets               = 10;
+  uint32 dst2src_packets               = 11;
+  uint64 src2dst_bytes                 = 12;
+  uint64 dst2src_bytes                 = 13;
+  float  packets_per_second            = 14;
+  float  bytes_per_second              = 15;
+  float  bidirectional_min_ps          = 16;
+  float  bidirectional_mean_ps         = 17;
+  float  bidirectional_stddev_ps       = 18;
+  float  bidirectional_max_ps          = 19;
+  float  bidirectional_min_piat_ms     = 20;
+  float  bidirectional_mean_piat_ms    = 21;
+  float  bidirectional_stddev_piat_ms  = 22;
+  float  bidirectional_max_piat_ms     = 23;
+  uint32 bidirectional_syn_packets     = 24;
+  uint32 bidirectional_ack_packets     = 25;
+  uint32 bidirectional_psh_packets     = 26;
+  uint32 bidirectional_rst_packets     = 27;
+  uint32 bidirectional_fin_packets     = 28;
+}
+
+message ClassifyBatchRequest  { repeated FlowFeatures flows   = 1; }
+message ClassifyResponse      {
+  string         flow_id       = 1;
+  string         label         = 2;
+  float          confidence    = 3;
+  repeated float probabilities = 4;
+}
+message ClassifyBatchResponse { repeated ClassifyResponse results = 1; }

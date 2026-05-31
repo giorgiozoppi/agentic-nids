@@ -1,0 +1,26 @@
+apiVersion: v2
+name: nids-observability
+description: Grafana + Loki + Tempo observability stack for NIDS on Linode LKE
+type: application
+version: 0.1.0
+appVersion: "1.0"
+
+dependencies:
+  # https://artifacthub.io/packages/helm/grafana/grafana
+  - name: grafana
+    version: "8.4.2"
+    repository: "https://grafana.github.io/helm-charts"
+    alias: grafana
+
+  # https://artifacthub.io/packages/helm/grafana/loki
+  # Simple scalable mode — single binary, no extra object store needed for dev
+  - name: loki
+    version: "6.6.5"
+    repository: "https://grafana.github.io/helm-charts"
+    alias: loki
+
+  # https://artifacthub.io/packages/helm/grafana/tempo
+  - name: tempo
+    version: "1.10.3"
+    repository: "https://grafana.github.io/helm-charts"
+    alias: tempo

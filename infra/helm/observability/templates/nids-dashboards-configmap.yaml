@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nids-dashboards
+  namespace: {{ .Values.namespace | default "observability" }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  nids-flows.json: |
+    {
+      "title": "NIDS — Network Flows",
+      "uid":   "nids-flows",
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Flows / min",
+          "datasource": "Loki",
+          "targets": [{
+            "expr": "sum(rate({job=\"nids-agent\"} | json [1m]))"
+          }]
+        },
+        {
+          "type": "stat",
+          "title": "Security Events / min",
+          "datasource": "Loki",
+          "targets": [{
+            "expr": "sum(rate({job=\"nids-orchestrator\"} | json | label=\"security_event\" [1m]))"
+          }]
+        },
+        {
+          "type": "timeseries",
+          "title": "Attack Label Distribution",
+          "datasource": "Loki",
+          "targets": [{
+            "expr": "sum by(label) (count_over_time({job=\"nids-orchestrator\"} | json | label!=\"BENIGN\" [5m]))",
+            "legendFormat": "{{label}}"
+          }]
+        },
+        {
+          "type": "table",
+          "title": "Recent Security Events",
+          "datasource": "Loki",
+          "targets": [{
+            "expr": "{job=\"nids-orchestrator\"} | json | label!=\"BENIGN\"",
+            "instant": false
+          }]
+        }
+      ],
+      "schemaVersion": 39,
+      "version": 1
+    }
