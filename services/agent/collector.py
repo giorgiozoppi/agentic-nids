@@ -140,6 +140,32 @@ def load_config(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _apply_env_overrides(cfg: dict) -> None:
+    """Overlay NATS/capture settings from environment variables (ConfigMap-friendly).
+
+    Env vars take precedence over the config file but are overridden by explicit
+    CLI flags.  Variable names match standard Kubernetes ConfigMap conventions:
+      NATS_URL, NATS_SUBJECT, CAPTURE_INTERFACE, CAPTURE_PCAP_FILE,
+      COLLECTOR_STATUS_PORT
+    """
+    import os
+
+    nats = cfg.setdefault("nats", {})
+    cap = cfg.setdefault("capture", {})
+    status = cfg.setdefault("status", {})
+
+    if v := os.environ.get("NATS_URL"):
+        nats["url"] = v
+    if v := os.environ.get("NATS_SUBJECT"):
+        nats["subject"] = v
+    if v := os.environ.get("CAPTURE_INTERFACE"):
+        cap["interface"] = v
+    if v := os.environ.get("CAPTURE_PCAP_FILE"):
+        cap["pcap_file"] = v
+    if v := os.environ.get("COLLECTOR_STATUS_PORT"):
+        status["port"] = int(v)
+
+
 def flow_to_dict(flow, statistical: bool) -> dict:
     dur_s = flow.bidirectional_duration_ms / 1000.0 if flow.bidirectional_duration_ms > 0 else 0.0
     d = {
@@ -207,8 +233,7 @@ async def _run(cfg: dict, state: CollectorState) -> None:
 
     source = cap.get("pcap_file") or cap.get("interface")
     if not source:
-        logger.error("No capture source set (capture.interface or capture.pcap_file)")
-        sys.exit(1)
+        raise ValueError("No capture source set (capture.interface or capture.pcap_file)")
 
     nats_url = nats_cfg.get("url", "nats://localhost:4222")
     subject = nats_cfg.get("subject", "flows.raw")
@@ -408,6 +433,8 @@ def main() -> None:
         if config.exists():
             cfg = load_config(config)
 
+        _apply_env_overrides(cfg)  # env vars override config file, CLI flags override env
+
         if interface:
             cfg.setdefault("capture", {})["interface"] = interface
         if pcap:
@@ -417,6 +444,21 @@ def main() -> None:
         if subject:
             cfg.setdefault("nats", {})["subject"] = subject
 
+        import os
+
+        cap_cfg = cfg.get("capture", {})
+        if not cap_cfg.get("interface") and not cap_cfg.get("pcap_file"):
+            typer.echo("Error: no capture source specified.\n")
+            typer.echo("You can set it via:")
+            typer.echo("  --interface eth0              (CLI flag)")
+            typer.echo("  --pcap traffic.pcap           (CLI flag)")
+            typer.echo("  CAPTURE_INTERFACE=eth0        (env var / ConfigMap)")
+            typer.echo("  CAPTURE_PCAP_FILE=file.pcap   (env var / ConfigMap)\n")
+            typer.echo("Available interfaces:")
+            for iface in get_interfaces():
+                typer.echo(f"  {iface}")
+            raise typer.Exit(code=1)
+
         # CLI --status-port takes precedence; otherwise fall back to config.
         effective_port = (
             status_port
@@ -424,10 +466,32 @@ def main() -> None:
             else cfg.get("status", {}).get("port", DEFAULT_STATUS_PORT)
         )
 
+        nats_cfg = cfg.get("nats", {})
+        effective_nats = nats_cfg.get("url", "nats://localhost:4222")
+        effective_subject = nats_cfg.get("subject", "flows.raw")
+
+        if cap_cfg.get("interface"):
+            if interface:
+                iface_source = "cli"
+            elif os.environ.get("CAPTURE_INTERFACE"):
+                iface_source = "env:CAPTURE_INTERFACE"
+            else:
+                iface_source = "config"
+            capture_source = f"{cap_cfg['interface']} ({iface_source})"
+        else:
+            capture_source = f"{cap_cfg.get('pcap_file')} (pcap)"
+
+        typer.echo("NIDS Collector starting")
+        typer.echo(f"  capture source : {capture_source}")
+        typer.echo(f"  NATS URL       : {effective_nats}")
+        typer.echo(f"  NATS subject   : {effective_subject}")
+        typer.echo(f"  status port    : {effective_port}")
         if daemon:
+            typer.echo(f"  mode           : daemon (pid={pid_file}, log={log_file})")
             _daemonize(pid_file, log_file)
             _setup_logging(log_file)
         else:
+            typer.echo( "  mode           : foreground")
             _setup_logging(None)
 
         loop = asyncio.new_event_loop()
