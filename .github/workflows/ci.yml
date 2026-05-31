@@ -2,38 +2,224 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
 
 jobs:
-  build-cpp:
+  # ── detect which services changed ──────────────────────────────────────────
+  changes:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        compiler: [clang, g++]
+    outputs:
+      agent:        ${{ steps.filter.outputs.agent }}
+      classifier:   ${{ steps.filter.outputs.classifier }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+      search:       ${{ steps.filter.outputs.search }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Bazel
-        uses: bazelbuild/setup-bazel@v3
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.compiler }}
-      - name: Build with Bazel
-        run: bazel build //...
-      - name: Build with ${{ matrix.compiler }}
-        run: |
-          mkdir -p build
-          cd src
-          ${{ matrix.compiler }} -std=c++17 -o ../build/flow_agent flow_agent.cpp flow.cpp
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            agent:
+              - 'services/agent/**'
+            classifier:
+              - 'services/classifier/**'
+              - 'proto/**'
+            orchestrator:
+              - 'services/orchestrator/**'
+              - 'proto/**'
+            search:
+              - 'services/search/**'
 
-  build-python:
+  # ── agent (Python) ─────────────────────────────────────────────────────────
+  agent:
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        run: pip install uv
-      - name: Build Python packages
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Build
+        working-directory: services/agent
+        run: uv sync
+
+      - name: Lint
+        working-directory: services/agent
+        run: uv run ruff check .
+
+      - name: Test
+        working-directory: services/agent
+        run: uv run pytest
+
+      - name: Build Docker image
+        run: docker build -f services/agent/Dockerfile -t nids-agent:ci .
+
+  # ── classifier (Rust) ──────────────────────────────────────────────────────
+  classifier:
+    needs: changes
+    if: needs.changes.outputs.classifier == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/classifier
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Fmt check
+        working-directory: services/classifier
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: services/classifier
+        env:
+          PROTO_DIR: ${{ github.workspace }}/proto
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        working-directory: services/classifier
+        env:
+          PROTO_DIR: ${{ github.workspace }}/proto
+        run: cargo build
+
+      - name: Test
+        working-directory: services/classifier
+        env:
+          PROTO_DIR: ${{ github.workspace }}/proto
+        run: cargo test
+
+      - name: Build Docker image (xgboost feature enabled)
         run: |
-          cd agent
-          uv pip install -r requirements.txt
-          uv pip install .
+          docker build -f services/classifier/Dockerfile \
+            --build-arg BUILD_FEATURES=xgboost \
+            -t nids-classifier:ci .
+
+  # ── orchestrator (Go) ──────────────────────────────────────────────────────
+  orchestrator:
+    needs: changes
+    if: needs.changes.outputs.orchestrator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: services/orchestrator/go.sum
+
+      - name: Install protoc + plugins
+        run: |
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
+
+      - name: Generate proto
+        run: make proto
+
+      - name: Vet
+        working-directory: services/orchestrator
+        run: go vet ./...
+
+      - name: Build
+        working-directory: services/orchestrator
+        run: go build ./...
+
+      - name: Test
+        working-directory: services/orchestrator
+        run: go test ./...
+
+      - name: Build Docker image
+        run: docker build -f services/orchestrator/Dockerfile -t nids-orchestrator:ci .
+
+  # ── search (Rust) ─────────────────────────────────────────────────────────
+  search:
+    needs: changes
+    if: needs.changes.outputs.search == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/search
+
+      - name: Fmt check
+        working-directory: services/search
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: services/search
+        run: cargo clippy -- -D warnings
+
+      - name: Build
+        working-directory: services/search
+        run: cargo build
+
+      - name: Test
+        working-directory: services/search
+        run: cargo test
+
+      - name: Build Docker image
+        run: docker build -f services/search/Dockerfile -t nids-search:ci .
+
+  # ── E2E: orchestrator ↔ classifier gRPC ───────────────────────────────────
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.classifier == 'true' || needs.changes.outputs.orchestrator == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/classifier
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: services/orchestrator/go.sum
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Install Go protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0
+
+      - name: Build classifier binary
+        working-directory: services/classifier
+        env:
+          PROTO_DIR: ${{ github.workspace }}/proto
+        run: cargo build --release
+
+      - name: Generate proto stubs
+        run: make proto
+
+      - name: E2E test — orchestrator calls classifier over gRPC
+        working-directory: services/orchestrator
+        env:
+          CLASSIFIER_BIN: ${{ github.workspace }}/services/classifier/target/release/classifier
+        run: go test ./internal/grpcclient/... -tags e2e -v -run TestE2EClassifierComm -timeout 30s

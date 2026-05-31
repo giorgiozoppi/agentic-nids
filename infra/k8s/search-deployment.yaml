@@ -1,0 +1,114 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: search
+  namespace: nids
+
+---
+# Non-secret search configuration.
+# Secrets (ClickHouse password) come from Vault via agent injection.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: search-config
+  namespace: nids
+data:
+  NIDS_SEARCH_ADDR:         "0.0.0.0:8080"
+  NIDS_CH_DB:               "nids"
+  NIDS_CH_USER:             "default"
+  NIDS_SQL_ROW_LIMIT:       "1000"
+  NIDS_CH_WORKERS:          "4"
+  NIDS_MILVUS_URI:          "http://milvus:19530"
+  NIDS_VECTOR_TOP_K_LIMIT:  "100"
+  NIDS_MIL_WORKERS:         "4"
+  NIDS_CONSUL_URL:          "http://consul:8500"
+  NIDS_CONSUL_POLL_S:       "30"
+  NIDS_MILVUS_COLLECTIONS:  "nids_flows"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search
+  namespace: nids
+  labels:
+    app: search
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: search
+  template:
+    metadata:
+      labels:
+        app: search
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "nids-search"
+
+        # Render ClickHouse credentials as a sourceable env file.
+        vault.hashicorp.com/agent-inject-secret-ch.env: "kv/data/nids/search"
+        vault.hashicorp.com/agent-inject-template-ch.env: |
+          {{- with secret "kv/data/nids/search" -}}
+          export NIDS_CH_URL="{{ .Data.data.ch_url }}"
+          export NIDS_CH_PASSWORD="{{ .Data.data.ch_password }}"
+          {{- end }}
+
+        vault.hashicorp.com/agent-inject-command-ch.env: "kill -HUP 1"
+    spec:
+      serviceAccountName: search
+      containers:
+        - name: search
+          image: ghcr.io/your-org/nids-search:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              [ -f /vault/secrets/ch.env ] && . /vault/secrets/ch.env
+              exec /usr/local/bin/nids-search
+          envFrom:
+            - configMapRef:
+                name: search-config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: search
+  namespace: nids
+  labels:
+    app: search
+spec:
+  type: ClusterIP
+  selector:
+    app: search
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

@@ -13,3 +13,5 @@ resources:
   - nids-collector-deployment.yaml
   - classifier-deployment.yaml
   - orchestrator-cronjob.yaml
+  - search-deployment.yaml
+  - promtail-daemonset.yaml
