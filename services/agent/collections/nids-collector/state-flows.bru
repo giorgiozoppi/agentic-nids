@@ -1,0 +1,15 @@
+meta {
+  name: Recent Flows
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{base_url}}/state/flows
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: 100
+}

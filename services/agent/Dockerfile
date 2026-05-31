@@ -12,9 +12,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 COPY services/agent/pyproject.toml services/agent/uv.lock ./
-RUN uv sync --no-dev --frozen
+RUN uv sync --no-dev --frozen --no-install-project
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY services/agent/collector.py ./
+RUN uv sync --no-dev --frozen
 COPY services/agent/config ./config
 COPY services/agent/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

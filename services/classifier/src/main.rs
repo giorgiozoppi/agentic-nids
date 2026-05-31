@@ -73,8 +73,8 @@ struct Args {
     #[arg(long, env = "NIDS_ORT_EP", default_value = "cpu")]
     ort_ep: String,
 
-    /// ClickHouse HTTP URL. Leave empty to disable classifier_alarms writes.
-    #[arg(long, env = "NIDS_CH_URL", default_value = "")]
+    /// ClickHouse HTTP URL. Required — service will not start without it.
+    #[arg(long, env = "NIDS_CH_URL")]
     ch_url: String,
 
     #[arg(long, env = "NIDS_CH_DB",       default_value = "nids")]
@@ -85,6 +85,11 @@ struct Args {
 
     #[arg(long, env = "NIDS_CH_PASSWORD", default_value = "")]
     ch_password: String,
+
+    /// Max connection attempts for the initial ClickHouse probe.
+    /// Configurable via NIDS_CH_CONNECT_RETRIES ConfigMap key.
+    #[arg(long, env = "NIDS_CH_CONNECT_RETRIES", default_value = "3")]
+    ch_connect_retries: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +317,7 @@ async fn write_alarms(ch: &Client, alarms: Vec<ClassifierAlarm>) -> anyhow::Resu
 struct GrpcClassifier {
     backend: Arc<dyn FlowClassifier>,
     labels:  Arc<Vec<String>>,
-    ch:      Option<Arc<Client>>,
+    ch:      Arc<Client>,
 }
 
 #[tonic::async_trait]
@@ -366,15 +371,42 @@ impl ClassifierService for GrpcClassifier {
             });
         }
 
-        if let Some(ch) = &self.ch {
-            let ch = Arc::clone(ch);
-            if let Err(e) = write_alarms(&ch, alarms).await {
-                error!(error = %e, "classifier_alarms write failed");
-            }
+        if let Err(e) = write_alarms(&self.ch, alarms).await {
+            error!(error = %e, "classifier_alarms write failed");
         }
 
         Ok(Response::new(ClassifyBatchResponse { results: responses }))
     }
+}
+
+// ---------------------------------------------------------------------------
+// ClickHouse connectivity probe with exponential backoff
+// ---------------------------------------------------------------------------
+
+async fn probe_clickhouse(ch: &Client, max_attempts: u32) -> anyhow::Result<()> {
+    let mut delay = std::time::Duration::from_secs(1);
+    for attempt in 1..=max_attempts {
+        match ch.query("SELECT 1").fetch_one::<u8>().await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if attempt == max_attempts {
+                    anyhow::bail!(
+                        "ClickHouse unreachable after {max_attempts} attempts: {e}"
+                    );
+                }
+                error!(
+                    attempt,
+                    max_attempts,
+                    delay_ms = delay.as_millis(),
+                    error = %e,
+                    "ClickHouse probe failed, retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+    }
+    unreachable!()
 }
 
 // ---------------------------------------------------------------------------
@@ -439,17 +471,16 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ClickHouse client (shared, connection-pooled via reqwest).
-    let ch: Option<Arc<Client>> = if args.ch_url.is_empty() {
-        info!("NIDS_CH_URL not set — classifier_alarms writes disabled");
-        None
-    } else {
+    anyhow::ensure!(!args.ch_url.is_empty(), "NIDS_CH_URL must be set");
+    let ch = {
         let client = Client::default()
             .with_url(&args.ch_url)
             .with_database(&args.ch_db)
             .with_user(&args.ch_user)
             .with_password(&args.ch_password);
+        probe_clickhouse(&client, args.ch_connect_retries).await?;
         info!(url = %args.ch_url, "ClickHouse pool ready");
-        Some(Arc::new(client))
+        Arc::new(client)
     };
 
     let addr = args.addr.parse()?;
@@ -459,7 +490,7 @@ async fn main() -> anyhow::Result<()> {
         .add_service(ClassifierServiceServer::new(GrpcClassifier {
             backend,
             labels: Arc::new(labels),
-            ch,
+            ch: Arc::clone(&ch),
         }))
         .serve(addr)
         .await?;
@@ -562,7 +593,7 @@ mod tests {
         let svc = GrpcClassifier {
             backend: Arc::new(DummyClassifier),
             labels: Arc::clone(&labels),
-            ch: None,
+            ch: Arc::new(Client::default().with_url("http://localhost:8123")),
         };
         let flows: Vec<FlowFeatures> = (0..10).map(|i| make_flow(&format!("f{i}"))).collect();
         let resp = svc

@@ -1,0 +1,76 @@
+version: "3.9"
+
+# Classifier service + ClickHouse
+#
+# Builds the classifier from the repo root (required so the Dockerfile can
+# reach the shared proto/ directory).
+#
+# Quick start:
+#   docker compose up --build
+#
+# Use the xgboost backend:
+#   BUILD_FEATURES=xgboost NIDS_MODEL_PATH=/models/model.onnx docker compose up --build
+#
+# ClickHouse HTTP: http://localhost:8123
+# Classifier gRPC: localhost:50051
+
+networks:
+  classifier:
+    driver: bridge
+
+volumes:
+  clickhouse-data:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: classifier-clickhouse
+    ports:
+      - "8123:8123"   # HTTP (used by the classifier and ch-ui)
+      - "9000:9000"   # native TCP
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./schema.sql:/docker-entrypoint-initdb.d/10-classifier.sql:ro
+    environment:
+      CLICKHOUSE_DB: nids
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks: [classifier]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  classifier:
+    build:
+      context: ../..          # repo root — Dockerfile needs proto/ alongside services/
+      dockerfile: services/classifier/Dockerfile
+      args:
+        BUILD_FEATURES: "${BUILD_FEATURES:-}"
+    container_name: nids-classifier
+    ports:
+      - "50051:50051"
+    environment:
+      NIDS_CH_URL:              "http://clickhouse:8123"
+      NIDS_CH_DB:               "${NIDS_CH_DB:-nids}"
+      NIDS_CH_USER:             "${NIDS_CH_USER:-default}"
+      NIDS_CH_PASSWORD:         "${NIDS_CH_PASSWORD:-}"
+      NIDS_CLASSIFIER_TYPE:     "${NIDS_CLASSIFIER_TYPE:-dummy}"
+      NIDS_CLASSIFIER_LABELS:   "${NIDS_CLASSIFIER_LABELS:-BENIGN,DoS,DDoS,PortScan,BruteForce,WebAttack,Botnet,Malware}"
+      NIDS_CH_CONNECT_RETRIES:  "${NIDS_CH_CONNECT_RETRIES:-3}"
+      NIDS_MODEL_PATH:          "${NIDS_MODEL_PATH:-}"
+      ORT_DYLIB_PATH:           "${ORT_DYLIB_PATH:-}"
+      NIDS_ORT_EP:              "${NIDS_ORT_EP:-cpu}"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks: [classifier]
+    restart: unless-stopped

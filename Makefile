@@ -2,6 +2,8 @@
         build-agent build-classifier build-orchestrator build-search \
         test-agent test-classifier test-orchestrator test-search
 
+export PATH := $(HOME)/go/bin:$(HOME)/.local/go/bin:$(PATH)
+
 REGISTRY   ?= ghcr.io
 OWNER      ?= $(shell git config user.name | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 TAG        ?= $(shell git rev-parse --short HEAD)

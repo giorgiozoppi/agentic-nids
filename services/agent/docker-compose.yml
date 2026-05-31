@@ -1,0 +1,54 @@
+services:
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222", "--store_dir=/data"]
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  collector:
+    image: nids-collector:latest
+    build:
+      context: ../..
+      dockerfile: services/agent/Dockerfile
+    # network_mode: host is required for live packet capture on the host NIC.
+    # Port 8080 is automatically available on the host; `ports:` is ignored in this mode.
+    # HTTP API:
+    #   GET http://localhost:8080/state/flows  — last 100 flows, newest first
+    #   GET http://localhost:8080/health       — liveness
+    #   GET http://localhost:8080/startup      — startup probe (503 while starting)
+    #   GET http://localhost:8080/readiness    — readiness probe (503 if NATS disconnected)
+    #   GET http://localhost:8080/state        — full internal state
+    #   GET http://localhost:8080/docs         — Swagger UI
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      - NATS_URL=nats://localhost:4222
+      - CAPTURE_INTERFACE=eno1
+    command: ["--interface", "eno1"]
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    volumes:
+      - collector-logs:/var/log
+
+volumes:
+  nats-data:
+  collector-logs:

@@ -1,4 +1,4 @@
-.PHONY: build test docker run
+.PHONY: build test docker run docker-run
 
 REGISTRY ?= ghcr.io
 OWNER    ?= $(shell git -C ../.. config user.name | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
@@ -25,3 +25,13 @@ docker:
 	  -f Dockerfile \
 	  -t $(IMAGE) \
 	  ../..
+
+# Run the collector container (live capture requires host network + NET_RAW/NET_ADMIN)
+# Override the interface: make docker-run INTERFACE=eth0
+docker-run:
+	docker run --rm \
+	  --network host \
+	  --cap-add NET_RAW \
+	  --cap-add NET_ADMIN \
+	  $(IMAGE) \
+	  --interface $(INTERFACE)

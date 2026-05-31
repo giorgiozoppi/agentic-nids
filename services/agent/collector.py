@@ -30,13 +30,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-RECENT_FLOWS_MAX = 20
+RECENT_FLOWS_MAX = 100
 
 import msgpack
 import nats
 import psutil
 import yaml
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from nfstream import NFStreamer
 
 logger = logging.getLogger(__name__)
@@ -126,9 +127,33 @@ async def get_state():
 
 
 @api.get("/state/flows")
-async def get_recent_flows():
-    """Return the last up-to-20 published flow summaries (newest last)."""
-    return {"recent_flows": list(_state._recent_flows)}
+async def get_recent_flows(limit: int = 100):
+    """Return the last N published flow summaries (max 100), newest first."""
+    limit = max(1, min(limit, RECENT_FLOWS_MAX))
+    return {
+        "flows": list(_state._recent_flows)[-limit:][::-1],
+        "total_published": _state.flows_published,
+    }
+
+
+@api.get("/startup")
+async def startup():
+    """Startup probe — 503 until the collector has left the 'starting' state."""
+    ready = _state.status != "starting"
+    return JSONResponse(
+        content={"ready": ready, "status": _state.status},
+        status_code=200 if ready else 503,
+    )
+
+
+@api.get("/readiness")
+async def readiness():
+    """Readiness probe — 503 if NATS is disconnected or collector is not running."""
+    ok = _state.nats_connected and _state.status == "running"
+    return JSONResponse(
+        content={"ready": ok, "nats_connected": _state.nats_connected, "status": _state.status},
+        status_code=200 if ok else 503,
+    )
 
 
 # ---------------------------------------------------------------------------
